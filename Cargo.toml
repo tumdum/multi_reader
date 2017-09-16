@@ -1,0 +1,6 @@
+[package]
+name = "multi_read"
+version = "0.1.0"
+authors = ["Tomasz Kłak <tomasz@tomaszklak.pl>"]
+
+[dependencies]
