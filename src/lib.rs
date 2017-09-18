@@ -19,14 +19,6 @@ fn get_size<R: Seek>(r: &mut R) -> u64 {
     size
 }
 
-// calc_positions returns seek positions of all buffors described by sizes
-// given current and desired possition.
-/*
-fn calc_positions(sizes: &[u64], current: u64, desired: u64) -> Vec<u64> {
-    vec![]
-}
-*/
-
 impl<R: Read + Seek + Clone> MultiRead<R> {
     pub fn new<T: AsRef<[R]>>(rs: T) -> Result<MultiRead<R>> {
         let mut readers = vec![];
@@ -85,7 +77,7 @@ impl<S: Seek> Seek for MultiRead<S> {
                     m -= s;
                     total += s;
                     self.reader += 1;
-                    // TODO: seek on skipped reader?
+                    // NOTE: seek on skipped reader?
                 }
                 for i in self.reader..self.readers.len() {
                     self.readers[i].seek(SeekFrom::Start(0)).unwrap();
@@ -93,7 +85,13 @@ impl<S: Seek> Seek for MultiRead<S> {
                 self.readers[self.reader].seek(SeekFrom::Start(m));
                 Ok(n)
             },
-            _ => Ok(self.total_size) // stopgag
+            SeekFrom::Current(n) => {
+                let mut current = self.readers[self.reader].seek(SeekFrom::Current(0)).unwrap();
+                if self.reader > 0 {
+                    current += self.ends[self.reader-1]
+                }
+                self.seek(SeekFrom::Start((current as i64 +n) as u64))
+            }
         }
     }
 }
@@ -270,32 +268,20 @@ mod tests {
         }
     }
 
-    /*
     #[test]
-    fn seek_XXX() {
-        let left = "foo bar baz";
-        let right = "aa bb cc";
-        let mut sut = MultiRead::new(&[
-            Cursor::new(""), Cursor::new(""), Cursor::new(""),
-            Cursor::new(left), 
-            Cursor::new(""), Cursor::new(""), Cursor::new(""),
-            Cursor::new(right),
-            Cursor::new(""), Cursor::new(""), Cursor::new("")]).unwrap();
-        let mut expected = Cursor::new(left.to_owned() + right);
-        let len = expected.seek(SeekFrom::End(0)).unwrap();
-        for i in 0..len {
-            sut.seek(SeekFrom::Start(0)).unwrap();
-            expected.seek(SeekFrom::Start(0)).unwrap();
-            let mut output = String::new();
-            let mut expected_output = String::new();
-            let result = sut.read_to_string(&mut output).unwrap();
-            let expected_result = expected.read_to_string(&mut expected_output).unwrap();
-            eprintln!("i={}", i);
-            assert_eq!(output, expected_output);
-            assert_eq!(result, expected_result);
+    fn seen_from_current() {
+        let total = FIRST.to_owned() + SECOND + LAST;
+        for i in 1..total.len()-1 {
+            let sut = MultiRead::new(&[Cursor::new(FIRST), Cursor::new(SECOND), Cursor::new(LAST)]).unwrap();
+            let expected = Cursor::new(total.clone());
+
+            compare(sut, expected, &[
+                Op::Seek(SeekFrom::Start(i as u64)),
+                Op::Seek(SeekFrom::Current(1)), Op::Read, 
+                Op::Seek(SeekFrom::Start(i as u64)),
+                Op::Seek(SeekFrom::Current(-1)), Op::Read]);
         }
     }
-    */
 
     /*
     #[test]
