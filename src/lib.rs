@@ -78,7 +78,7 @@ impl<S: Seek> Seek for MultiRead<S> {
                 Ok(n)
             },
             SeekFrom::Current(n) => {
-                let mut current = self.readers[self.reader].seek(SeekFrom::Current(0)).unwrap();
+                let mut current = self.readers[self.reader].seek(SeekFrom::Current(0))?;
                 if self.reader > 0 {
                     current += self.ends[self.reader-1]
                 }
@@ -246,6 +246,8 @@ mod tests {
         assert!(sut.seek(SeekFrom::Start(10)).is_err());
         let mut sut = MultiRead::new(vec![FailingSeek::new(5), FailingSeek::new(2)]).unwrap();
         assert!(sut.seek(SeekFrom::Start(DEFAULT_SIZE/2)).is_err());
+        let mut sut = MultiRead::new(vec![FailingSeek::new(2)]).unwrap();
+        assert!(sut.seek(SeekFrom::Current(10)).is_err());
     }
 
     #[test]
