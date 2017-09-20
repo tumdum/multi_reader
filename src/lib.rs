@@ -19,13 +19,12 @@ fn get_size<R: Seek>(r: &mut R) -> Result<u64> {
     Ok(size)
 }
 
-impl<R: Read + Seek + Clone> MultiRead<R> {
-    pub fn new<T: AsRef<[R]>>(rs: T) -> Result<MultiRead<R>> {
+impl<R: Read + Seek> MultiRead<R> {
+    pub fn new<T: IntoIterator<Item=R>>(rs: T) -> Result<MultiRead<R>> {
         let mut readers = vec![];
         let mut ends = vec![];
         let mut running_total = 0;
-        for r in rs.as_ref() {
-            let mut r = r.clone();
+        for mut r in rs {
             let size = get_size(&mut r)?;
             if size == 0 {
                 continue;
@@ -101,7 +100,6 @@ mod tests {
     use super::*;
     use std::io::{Cursor, Error, ErrorKind};
 
-    #[derive(Clone)]
     struct ErrorReturningReader {
     }
 
@@ -117,7 +115,6 @@ mod tests {
         }
     }
 
-    #[derive(Clone)]
     struct FailingSeek;
 
     impl Read for FailingSeek {
@@ -158,7 +155,7 @@ mod tests {
 
     #[test]
     fn creation_from_failing_seeker() {
-        assert!(!MultiRead::new(&[FailingSeek{}]).is_ok());
+        assert!(!MultiRead::new(vec![FailingSeek{}]).is_ok());
     }
 
     #[test]
@@ -173,7 +170,7 @@ mod tests {
     fn one_reader() {
         let input = "foo bar baz";
         let full = Cursor::new(&input);
-        let mut sut = MultiRead::new(&[full]).unwrap();
+        let mut sut = MultiRead::new(vec![full]).unwrap();
         let mut output = String::new();
         assert_eq!(input.len(), sut.read_to_string(&mut output).unwrap());
         assert_eq!(input, output);
@@ -182,7 +179,7 @@ mod tests {
     #[test]
     fn two_readers() {
         let input = FIRST.to_owned() + SECOND;
-        let mut sut = MultiRead::new(&[Cursor::new(FIRST), Cursor::new(SECOND)]).unwrap();
+        let mut sut = MultiRead::new(vec![Cursor::new(FIRST), Cursor::new(SECOND)]).unwrap();
         let mut output = String::new();
         assert_eq!(input.len(), sut.read_to_string(&mut output).unwrap());
         assert_eq!(input, output);
@@ -191,7 +188,7 @@ mod tests {
     #[test]
     fn empty_readers_in_between() {
         let input = FIRST.to_owned() + SECOND;
-        let mut sut = MultiRead::new(&[
+        let mut sut = MultiRead::new(vec![
             Cursor::new(""), Cursor::new(""), Cursor::new(""),
             Cursor::new(FIRST), 
             Cursor::new(""), Cursor::new(""), Cursor::new(""),
@@ -204,7 +201,7 @@ mod tests {
 
     #[test]
     fn error_propagation() {
-        let mut sut = MultiRead::new(&[ErrorReturningReader{}]).unwrap();
+        let mut sut = MultiRead::new(vec![ErrorReturningReader{}]).unwrap();
         let mut output = String::new();
         assert!(sut.read_to_string(&mut output).is_err());
         assert_eq!(0, output.len());
@@ -212,10 +209,10 @@ mod tests {
 
     #[test]
     fn seek_to_end_should_return_sum_of_sizes() {
-        let mut sut = MultiRead::new(&[Cursor::new(FIRST), Cursor::new(SECOND)]).unwrap();
+        let mut sut = MultiRead::new(vec![Cursor::new(FIRST), Cursor::new(SECOND)]).unwrap();
         assert_eq!((FIRST.len() + SECOND.len()) as u64, sut.seek(SeekFrom::End(0)).unwrap());
 
-        let mut sut = MultiRead::new(&[
+        let mut sut = MultiRead::new(vec![
             Cursor::new(""), Cursor::new(""), Cursor::new(""),
             Cursor::new(FIRST), 
             Cursor::new(""), Cursor::new(""), Cursor::new(""),
@@ -227,7 +224,7 @@ mod tests {
     #[test]
     fn seek_in_one_reader() {
         let left = "foo bar baz";
-        let sut = MultiRead::new(&[Cursor::new(left)]).unwrap();
+        let sut = MultiRead::new(vec![Cursor::new(left)]).unwrap();
         let expected = Cursor::new(left);
 
         compare(sut, expected, &[Op::Seek(SeekFrom::Start(4)), Op::Read]);
@@ -235,14 +232,14 @@ mod tests {
 
     #[test]
     fn seek_in_two_readers() {
-        let sut = MultiRead::new(&[Cursor::new(FIRST), Cursor::new(SECOND)]).unwrap();
+        let sut = MultiRead::new(vec![Cursor::new(FIRST), Cursor::new(SECOND)]).unwrap();
         let expected = Cursor::new(FIRST.to_owned() + SECOND);
         compare(sut, expected, &[Op::Seek(SeekFrom::Start((FIRST.len() + "aa ".len()) as u64)), Op::Read]);
     }
 
     #[test]
     fn seek_twice() {
-        let sut = MultiRead::new(&[Cursor::new(FIRST), Cursor::new(SECOND)]).unwrap();
+        let sut = MultiRead::new(vec![Cursor::new(FIRST), Cursor::new(SECOND)]).unwrap();
         let expected = Cursor::new(FIRST.to_owned() + SECOND);
         compare(sut, expected, &[
             Op::Seek(SeekFrom::Start((FIRST.len() + SECOND.len()) as u64)),
@@ -254,7 +251,7 @@ mod tests {
     fn any_seek_from_start() {
         let total = FIRST.to_owned() + SECOND + LAST;
         for i in 0..total.len() {
-            let sut = MultiRead::new(&[Cursor::new(FIRST), Cursor::new(SECOND), Cursor::new(LAST)]).unwrap();
+            let sut = MultiRead::new(vec![Cursor::new(FIRST), Cursor::new(SECOND), Cursor::new(LAST)]).unwrap();
             let expected = Cursor::new(total.clone());
 
             compare(sut, expected, &[Op::Seek(SeekFrom::Start(i as u64)), Op::Read]);
@@ -265,7 +262,7 @@ mod tests {
     #[test]
     fn seek_backwards2() {
         let total = FIRST.to_owned() + SECOND + LAST;
-        let sut = MultiRead::new(&[Cursor::new(FIRST), Cursor::new(SECOND), Cursor::new(LAST)]).unwrap();
+        let sut = MultiRead::new(vec![Cursor::new(FIRST), Cursor::new(SECOND), Cursor::new(LAST)]).unwrap();
         let expected = Cursor::new(total.clone());
 
         compare(sut, expected, &[
@@ -279,7 +276,7 @@ mod tests {
     fn any_seek_from_end() {
         let total = FIRST.to_owned() + SECOND + LAST;
         for i in 0..total.len() {
-            let sut = MultiRead::new(&[Cursor::new(FIRST), Cursor::new(SECOND), Cursor::new(LAST)]).unwrap();
+            let sut = MultiRead::new(vec![Cursor::new(FIRST), Cursor::new(SECOND), Cursor::new(LAST)]).unwrap();
             let expected = Cursor::new(total.clone());
 
             compare(sut, expected, &[Op::Seek(SeekFrom::End(-(i as i64))), Op::Read]);
@@ -290,7 +287,7 @@ mod tests {
     fn seen_from_current() {
         let total = FIRST.to_owned() + SECOND + LAST;
         for i in 1..total.len()-1 {
-            let sut = MultiRead::new(&[Cursor::new(FIRST), Cursor::new(SECOND), Cursor::new(LAST)]).unwrap();
+            let sut = MultiRead::new(vec![Cursor::new(FIRST), Cursor::new(SECOND), Cursor::new(LAST)]).unwrap();
             let expected = Cursor::new(total.clone());
 
             compare(sut, expected, &[
@@ -309,7 +306,7 @@ mod tests {
         let full = Cursor::new(&input);
         let first : Box<Read> = Box::new(full);
         let second : Box<Read> = Box::new(ErrorReturningReader{});
-        let mut sut = MultiRead::new(&[first, second]);
+        let mut sut = MultiRead::new(vec![first, second]);
         let mut output = String::new();
         // TODO: check error
         assert_eq!(input, output);
