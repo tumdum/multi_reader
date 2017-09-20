@@ -17,17 +17,16 @@ impl<R: Read + Seek> MultiRead<R> {
     pub fn new<T: IntoIterator<Item=R>>(rs: T) -> Result<MultiRead<R>> {
         let mut readers = vec![];
         let mut ends = vec![];
-        let mut running_total = 0;
+        let mut total_size = 0;
         for mut r in rs {
             let size = get_size(&mut r)?;
             if size == 0 {
                 continue;
             }
             readers.push(r);
-            running_total += size;
-            ends.push(running_total);
+            total_size += size;
+            ends.push(total_size);
         }
-        let total_size = running_total;
         let reader = 0;
         Ok(MultiRead{readers, ends, reader, total_size})
     }
