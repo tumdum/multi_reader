@@ -71,7 +71,7 @@ impl<S: Seek> Seek for MultiRead<S> {
                     self.reader += 1;
                     // NOTE: seek on skipped reader?
                 }
-                for i in self.reader..self.readers.len() {
+                for i in self.reader+1..self.readers.len() {
                     self.readers[i].seek(SeekFrom::Start(0))?;
                 }
                 self.readers[self.reader].seek(SeekFrom::Start(m))?;
@@ -244,8 +244,8 @@ mod tests {
     fn seek_should_propagate_failures() {
         let mut sut = MultiRead::new(vec![FailingSeek::new(2)]).unwrap();
         assert!(sut.seek(SeekFrom::Start(10)).is_err());
-        let mut sut = MultiRead::new(vec![FailingSeek::new(3)]).unwrap();
-        assert!(sut.seek(SeekFrom::Start(10)).is_err());
+        let mut sut = MultiRead::new(vec![FailingSeek::new(5), FailingSeek::new(2)]).unwrap();
+        assert!(sut.seek(SeekFrom::Start(DEFAULT_SIZE/2)).is_err());
     }
 
     #[test]
