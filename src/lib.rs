@@ -340,19 +340,4 @@ mod tests {
                 Op::Seek(SeekFrom::Current(-1)), Op::Read]);
         }
     }
-
-    /*
-    #[test]
-    fn error_handling() {
-
-        let input = "foo bar baz";
-        let full = Cursor::new(&input);
-        let first : Box<Read> = Box::new(full);
-        let second : Box<Read> = Box::new(ErrorReturningReader{});
-        let mut sut = MultiRead::new(vec![first, second]);
-        let mut output = String::new();
-        // TODO: check error
-        assert_eq!(input, output);
-    }
-    */
 }
