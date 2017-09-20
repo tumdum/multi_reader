@@ -278,9 +278,8 @@ mod tests {
         }
     }
 
-
     #[test]
-    fn seek_backwards2() {
+    fn seek_backwards() {
         let total = FIRST.to_owned() + SECOND + LAST;
         let sut = MultiRead::new(vec![Cursor::new(FIRST), Cursor::new(SECOND), Cursor::new(LAST)]).unwrap();
         let expected = Cursor::new(total.clone());
