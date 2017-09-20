@@ -93,6 +93,8 @@ mod tests {
     use super::*;
     use std::io::{Cursor, Error, ErrorKind};
 
+    const DEFAULT_SIZE : u64 = 100;
+
     struct ErrorReturningReader {
     }
 
@@ -104,7 +106,7 @@ mod tests {
 
     impl Seek for ErrorReturningReader {
         fn seek(&mut self, _pos: SeekFrom) -> Result<u64> {
-            Ok(10)
+            Ok(DEFAULT_SIZE)
         }
     }
 
@@ -130,7 +132,7 @@ mod tests {
                 return Err(Error::new(ErrorKind::Other, "dummy"))
             }
             self.current += 1;
-            Ok(100)
+            Ok(DEFAULT_SIZE)
         }
     }
 
