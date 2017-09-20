@@ -85,7 +85,11 @@ impl<S: Seek> Seek for MultiRead<S> {
                 if self.reader > 0 {
                     current += self.ends[self.reader-1]
                 }
-                self.seek(SeekFrom::Start((current as i64 +n) as u64))
+                let absolute_position = current as i64 + n;
+                if absolute_position < 0 {
+                    return Err(Error::new(ErrorKind::InvalidInput, "seek before beginning of raeder"))
+                }
+                self.seek(SeekFrom::Start(absolute_position as u64))
             }
         }
     }
@@ -282,10 +286,20 @@ mod tests {
     }
 
     #[test]
-    fn seek_past_boundry_fails() {
+    fn seek_outside_of_bounds() {
         let total = FIRST.to_owned() + SECOND + LAST;
         let mut sut = MultiRead::new(vec![Cursor::new(FIRST), Cursor::new(SECOND), Cursor::new(LAST)]).unwrap();
-        assert!(sut.seek(SeekFrom::Start(total.len() as u64 +1)).is_err());
+        assert!(sut.seek(SeekFrom::Start(total.len() as u64 + 1)).is_err());
+
+        assert!(sut.seek(SeekFrom::End(1)).is_err());
+        assert!(sut.seek(SeekFrom::End(-(total.len()as i64 + 1))).is_err());
+
+        assert!(sut.seek(SeekFrom::Current(total.len() as i64 + 1)).is_err());
+        assert!(sut.seek(SeekFrom::Current(-1)).is_err());
+
+        let mut output = String::new();
+        assert_eq!(total.len(), sut.read_to_string(&mut output).unwrap());
+        assert_eq!(output, total);
     }
 
     #[test]
