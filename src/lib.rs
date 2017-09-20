@@ -7,16 +7,16 @@ pub struct MultiRead<R> {
     total_size: u64,
 }
 
-fn get_size<R: Seek>(r: &mut R) -> u64 {
+fn get_size<R: Seek>(r: &mut R) -> Result<u64> {
     let size;
     match r.seek(SeekFrom::End(0)) {
         Ok(n) => size = n,
-        e @ Err(_) => panic!(e)
+        e @ Err(_) => return e
     }
     if let e @ Err(_) = r.seek(SeekFrom::Start(0)) {
         panic!(e)
     }
-    size
+    Ok(size)
 }
 
 impl<R: Read + Seek + Clone> MultiRead<R> {
@@ -26,7 +26,7 @@ impl<R: Read + Seek + Clone> MultiRead<R> {
         let mut running_total = 0;
         for r in rs.as_ref() {
             let mut r = r.clone();
-            let size = get_size(&mut r);
+            let size = get_size(&mut r)?;
             if size == 0 {
                 continue;
             }
@@ -82,7 +82,7 @@ impl<S: Seek> Seek for MultiRead<S> {
                 for i in self.reader..self.readers.len() {
                     self.readers[i].seek(SeekFrom::Start(0)).unwrap();
                 }
-                self.readers[self.reader].seek(SeekFrom::Start(m));
+                self.readers[self.reader].seek(SeekFrom::Start(m)).unwrap();
                 Ok(n)
             },
             SeekFrom::Current(n) => {
@@ -117,6 +117,19 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct FailingSeek;
+
+    impl Read for FailingSeek {
+        fn read(&mut self, _buf: &mut [u8]) -> Result<usize> { Ok(0) }
+    }
+
+    impl Seek for FailingSeek {
+        fn seek(&mut self, _pos: SeekFrom) -> Result<u64> {
+            Err(Error::new(ErrorKind::Other, "dummy"))
+        }
+    }
+
     enum Op {
         Seek(SeekFrom),
         Read
@@ -142,6 +155,11 @@ mod tests {
     const FIRST : &'static str = "AAAAAAAAAAAAAAAAAA";
     const SECOND : &'static str = "BBBBBBBBBBBBB";
     const LAST : &'static str = "CCCCCCCCCCCCCCCCCCCCCCCCC";
+
+    #[test]
+    fn creation_from_failing_seeker() {
+        assert!(!MultiRead::new(&[FailingSeek{}]).is_ok());
+    }
 
     #[test]
     fn no_reader() {
