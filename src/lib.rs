@@ -8,14 +8,8 @@ pub struct MultiRead<R> {
 }
 
 fn get_size<R: Seek>(r: &mut R) -> Result<u64> {
-    let size;
-    match r.seek(SeekFrom::End(0)) {
-        Ok(n) => size = n,
-        e @ Err(_) => return e
-    }
-    if let e @ Err(_) = r.seek(SeekFrom::Start(0)) {
-        panic!(e)
-    }
+    let size = r.seek(SeekFrom::End(0))?;
+    r.seek(SeekFrom::Start(0))?;
     Ok(size)
 }
 
@@ -127,6 +121,30 @@ mod tests {
         }
     }
 
+    struct FailingSecondSeek {
+        first: bool
+    }
+
+    impl FailingSecondSeek {
+        fn new() -> FailingSecondSeek {
+            FailingSecondSeek{first: true}
+        }
+    }
+
+    impl Read for FailingSecondSeek {
+        fn read(&mut self, _buf: &mut [u8]) -> Result<usize> { Ok(0) }
+    }
+
+    impl Seek for FailingSecondSeek {
+        fn seek(&mut self, _pos: SeekFrom) -> Result<u64> {
+            if !self.first {
+                return Err(Error::new(ErrorKind::Other, "dummy"))
+            }
+            self.first = false;
+            Ok(0)
+        }
+    }
+
     enum Op {
         Seek(SeekFrom),
         Read
@@ -156,6 +174,7 @@ mod tests {
     #[test]
     fn creation_from_failing_seeker() {
         assert!(!MultiRead::new(vec![FailingSeek{}]).is_ok());
+        assert!(!MultiRead::new(vec![FailingSecondSeek::new()]).is_ok());
     }
 
     #[test]
