@@ -108,7 +108,16 @@ mod tests {
         }
     }
 
-    struct FailingSeek;
+    struct FailingSeek{
+        which: usize,
+        current: usize
+    }
+
+    impl FailingSeek {
+        fn new(which: usize) -> FailingSeek {
+            FailingSeek{which: which, current: 0}
+        }
+    }
 
     impl Read for FailingSeek {
         fn read(&mut self, _buf: &mut [u8]) -> Result<usize> { Ok(0) }
@@ -116,30 +125,11 @@ mod tests {
 
     impl Seek for FailingSeek {
         fn seek(&mut self, _pos: SeekFrom) -> Result<u64> {
-            Err(Error::new(ErrorKind::Other, "dummy"))
-        }
-    }
-
-    struct FailingSecondSeek {
-        first: bool
-    }
-
-    impl FailingSecondSeek {
-        fn new() -> FailingSecondSeek {
-            FailingSecondSeek{first: true}
-        }
-    }
-
-    impl Read for FailingSecondSeek {
-        fn read(&mut self, _buf: &mut [u8]) -> Result<usize> { Ok(0) }
-    }
-
-    impl Seek for FailingSecondSeek {
-        fn seek(&mut self, _pos: SeekFrom) -> Result<u64> {
-            if !self.first {
+            if self.which == self.current {
+                self.current += 1;
                 return Err(Error::new(ErrorKind::Other, "dummy"))
             }
-            self.first = false;
+            self.current += 1;
             Ok(0)
         }
     }
@@ -172,8 +162,8 @@ mod tests {
 
     #[test]
     fn creation_from_failing_seeker() {
-        assert!(!MultiRead::new(vec![FailingSeek{}]).is_ok());
-        assert!(!MultiRead::new(vec![FailingSecondSeek::new()]).is_ok());
+        assert!(!MultiRead::new(vec![FailingSeek::new(0)]).is_ok());
+        assert!(!MultiRead::new(vec![FailingSeek::new(1)]).is_ok());
     }
 
     #[test]
