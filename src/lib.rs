@@ -1,4 +1,4 @@
-use std::io::{Read,Result,Seek,SeekFrom};
+use std::io::{Error,ErrorKind,Read,Result,Seek,SeekFrom};
 
 pub struct MultiRead<R> {
     readers: Vec<R>,
@@ -58,6 +58,9 @@ impl<S: Seek> Seek for MultiRead<S> {
                 self.seek(SeekFrom::Start((total_size + n) as u64))
             }
             SeekFrom::Start(n) => {
+                if n > self.total_size {
+                    return Err(Error::new(ErrorKind::InvalidInput, "seek past the end of reader"))
+                }
                 self.reader = 0;
                 let mut m = n;
                 let mut total = 0;
@@ -276,6 +279,13 @@ mod tests {
 
             compare(sut, expected, &[Op::Seek(SeekFrom::Start(i as u64)), Op::Read]);
         }
+    }
+
+    #[test]
+    fn seek_past_boundry_fails() {
+        let total = FIRST.to_owned() + SECOND + LAST;
+        let mut sut = MultiRead::new(vec![Cursor::new(FIRST), Cursor::new(SECOND), Cursor::new(LAST)]).unwrap();
+        assert!(sut.seek(SeekFrom::Start(total.len() as u64 +1)).is_err());
     }
 
     #[test]
