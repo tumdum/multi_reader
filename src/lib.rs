@@ -149,7 +149,7 @@ impl From<std::io::Error> for LineError {
     }
 }
 
-type LineResult<T> = std::result::Result<T, LineError>;
+pub type LineResult<T> = std::result::Result<T, LineError>;
 
 impl <T: Read + Seek> Lines<T> {
     pub fn from_multiread(r: MultiRead<T>) -> LineResult<Lines<T>> {
