@@ -30,7 +30,6 @@ impl<R: Read + Seek> MultiRead<R> {
         let reader = 0;
         Ok(MultiRead{readers, ends, reader, total_size})
     }
-
 }
 
 impl<R: Read> Read for MultiRead<R> {
@@ -92,6 +91,88 @@ impl<S: Seek> Seek for MultiRead<S> {
                 self.seek(SeekFrom::Start(absolute_position as u64))
             }
         }
+    }
+}
+
+#[derive(Debug)]
+struct Boundry {
+    start: usize,
+    len: usize,
+}
+
+pub struct Lines<R> {
+    reader: MultiRead<R>,
+    boundries: Vec<Boundry>
+}
+
+fn count_lines<T: Read + Seek>(reader: &mut MultiRead<T>) -> LineResult<Vec<Boundry>> {
+    // TODO: is unicode important here?
+    // TODO: run on threads for each chunk in multireader
+    let mut position = 0;
+    let mut start = 0;
+    let mut boundries = vec![];
+    let mut in_break = false;
+    for b in reader.by_ref().bytes() {
+        match b {
+            Ok(b'\n') | Ok(b'\r') => {
+                if !in_break {
+                    boundries.push(Boundry{start: start, len: position-start});
+                    in_break = true;
+                }
+            }
+            Err(e) => return Err(LineError::IoError(e)),
+            Ok(_) => {
+                if in_break {
+                    in_break = false;
+                    start = position;
+                }
+            }
+        };
+        position += 1;
+    }
+    if position > 0 {
+        boundries.push(Boundry{start:start, len: position - start});
+    }
+    Ok(boundries)
+}
+
+#[derive(Debug)]
+pub enum LineError {
+    OutOfBounds(usize),
+    IoError(std::io::Error)
+}
+
+impl From<std::io::Error> for LineError {
+    fn from(e: std::io::Error) -> LineError {
+        LineError::IoError(e)
+    }
+}
+
+type LineResult<T> = std::result::Result<T, LineError>;
+
+impl <T: Read + Seek> Lines<T> {
+    pub fn from_multiread(r: MultiRead<T>) -> LineResult<Lines<T>> {
+        let mut reader = r;
+        let boundries = count_lines(&mut reader)?;
+        Ok(Lines{reader, boundries})
+    }
+
+    pub fn len(&self) -> usize {
+        self.boundries.len()
+    }
+
+    pub fn line(&mut self, line: usize) -> LineResult<Vec<u8>> {
+        if line >= self.len() {
+            return Err(LineError::OutOfBounds(line))
+        }
+        let ref boundry = self.boundries[line];
+        self.reader.seek(SeekFrom::Start(boundry.start as u64))?;
+
+        // TODO: no TryFrom<u32> for usize on stable
+        // https://github.com/rust-lang/rust/issues/33417
+        let mut buf = vec![0; boundry.len];
+        self.reader.read_exact(&mut buf)?;
+        Ok(buf)
     }
 }
 
@@ -339,5 +420,81 @@ mod tests {
                 Op::Seek(SeekFrom::Start(i as u64)),
                 Op::Seek(SeekFrom::Current(-1)), Op::Read]);
         }
+    }
+
+    fn lines_from_string(s: &str) -> Lines<Cursor<&str>> {
+        let full = Cursor::new(s);
+        let sut = MultiRead::new(vec![full]).unwrap();
+        Lines::from_multiread(sut).unwrap()
+    }
+
+    #[test]
+    fn size_of_lines_from_empty() {
+        let lines = lines_from_string("");
+        assert_eq!(0, lines.len());
+    }
+
+    #[test]
+    fn size_of_lines_from_one_line() {
+        let lines = lines_from_string("one short line");
+        assert_eq!(1, lines.len());
+    }
+
+    #[test]
+    fn size_of_lines_from_one_line_split_across_separate_readers() {
+        let multiread = MultiRead::new(vec![
+            Cursor::new(FIRST), 
+            Cursor::new(SECOND),
+            Cursor::new(LAST)]).unwrap();
+        let lines = Lines::from_multiread(multiread).unwrap();
+        assert_eq!(1, lines.len());
+    }
+
+    #[test]
+    fn size_of_lines_from_two_lines_separated_by_multiple_newlines() {
+        let lines = lines_from_string("aa\n\r\n\nbb");
+        assert_eq!(2, lines.len());
+    }
+
+    #[test]
+    fn line_from_one_line_lines() {
+        let mut lines = lines_from_string(FIRST);
+        assert_eq!(FIRST, String::from_utf8(lines.line(0).unwrap()).unwrap());
+    }
+
+    #[test]
+    fn line_reading() {
+        let multiread = MultiRead::new(vec![
+            Cursor::new(FIRST), 
+            Cursor::new("\n\n\n\n"),
+            Cursor::new(SECOND),
+            Cursor::new("\r\n\n\r\n"), 
+            Cursor::new(LAST),
+            Cursor::new("\r\r\n\n"),
+            Cursor::new("foo "), Cursor::new("bar "), Cursor::new("baz")]).unwrap();
+        let mut lines = Lines::from_multiread(multiread).unwrap();
+        assert_eq!(4, lines.len());
+        assert_eq!(FIRST, String::from_utf8(lines.line(0).unwrap()).unwrap());
+        assert_eq!(SECOND, String::from_utf8(lines.line(1).unwrap()).unwrap());
+        assert_eq!(LAST, String::from_utf8(lines.line(2).unwrap()).unwrap());
+        assert_eq!("foo bar baz", String::from_utf8(lines.line(3).unwrap()).unwrap());
+    }
+
+    #[test]
+    fn line_reading_out_of_bounds() {
+        let multiread = MultiRead::new(vec![
+            Cursor::new(FIRST), 
+            Cursor::new(SECOND),
+            Cursor::new(LAST)]).unwrap();
+        let mut lines = Lines::from_multiread(multiread).unwrap();
+        assert!(lines.line(3).is_err());
+        assert_eq!(std::mem::align_of::<Boundry>(), 8);
+        assert_eq!(std::mem::size_of::<Boundry>(), 16);
+    }
+
+    #[test]
+    fn lines_construction_with_failing_io() {
+        let multiread = MultiRead::new(vec![ErrorReturningReader{}]).unwrap();
+        assert!(Lines::from_multiread(multiread).is_err());
     }
 }
