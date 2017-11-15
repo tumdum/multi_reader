@@ -1,4 +1,4 @@
-use std::io::{Error,ErrorKind,Read,Result,Seek,SeekFrom};
+use std::io::{BufReader,Error,ErrorKind,Read,Result,Seek,SeekFrom};
 
 pub struct MultiRead<R> {
     readers: Vec<R>,
@@ -112,6 +112,7 @@ fn count_lines<T: Read + Seek>(reader: &mut MultiRead<T>) -> LineResult<Vec<Boun
     let mut start = 0;
     let mut boundries = vec![];
     let mut in_break = false;
+    let mut reader = BufReader::new(reader);
     for b in reader.by_ref().bytes() {
         match b {
             Ok(b'\n') | Ok(b'\r') => {
