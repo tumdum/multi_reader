@@ -112,8 +112,8 @@ fn count_lines<T: Read + Seek>(reader: &mut MultiRead<T>) -> LineResult<Vec<Boun
     let mut start = 0;
     let mut boundries = vec![];
     let mut in_break = false;
-    let mut reader = BufReader::new(reader);
-    for b in reader.by_ref().bytes() {
+    let reader = BufReader::new(reader);
+    for b in reader.bytes() {
         match b {
             Ok(b'\n') | Ok(b'\r') => {
                 if !in_break {
