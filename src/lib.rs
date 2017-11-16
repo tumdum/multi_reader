@@ -1,5 +1,9 @@
+extern crate rayon;
+
 use std::io::{BufReader,Error,ErrorKind,Read,Result,Seek,SeekFrom};
 use std::iter::once;
+
+use rayon::prelude::*;
 
 pub struct MultiRead<R> {
     readers: Vec<R>,
@@ -37,7 +41,7 @@ impl<R: Read + Seek> MultiRead<R> {
         {
             let offsets = once(&0).chain(self.ends.iter());
             let local_boundries : std::result::Result<Vec<Vec<Boundry>>, _> = self.readers
-                .iter_mut()
+                .par_iter_mut()
                 .zip(offsets)
                 .map(|pair| count_lines(pair.0, *pair.1 as usize)).collect();
 
