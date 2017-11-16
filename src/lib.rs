@@ -1,4 +1,5 @@
 use std::io::{BufReader,Error,ErrorKind,Read,Result,Seek,SeekFrom};
+use std::iter::once;
 
 pub struct MultiRead<R> {
     readers: Vec<R>,
@@ -29,6 +30,25 @@ impl<R: Read + Seek> MultiRead<R> {
         }
         let reader = 0;
         Ok(MultiRead{readers, ends, reader, total_size})
+    }
+
+    pub fn lines(mut self) -> LineResult<Lines<R>> {
+        let mut boundries : Vec<Boundry> = vec![];
+        {
+            let offsets = once(&0).chain(self.ends.iter());
+            for (r, o) in self.readers.iter_mut().zip(offsets) {
+                let local_boundries : Vec<Boundry> = count_lines(r, *o as usize)?;
+                let skip = match (boundries.last_mut(), local_boundries.first()) {
+                    (Some(ref mut last), Some(next)) if (last.start + last.len) == next.start => {
+                        last.len += next.len;
+                        1
+                    }
+                    _ => 0
+                };
+                boundries.extend(local_boundries.into_iter().skip(skip));
+            }
+        }
+        Ok(Lines{reader: self, boundries: boundries})
     }
 }
 
@@ -105,13 +125,13 @@ pub struct Lines<R> {
     boundries: Vec<Boundry>
 }
 
-fn count_lines<T: Read + Seek>(reader: &mut MultiRead<T>) -> LineResult<Vec<Boundry>> {
+fn count_lines<R: Read>(reader: &mut R, offset: usize) -> LineResult<Vec<Boundry>> {
     // TODO: is unicode important here?
     // TODO: run on threads for each chunk in multireader
-    let mut position = 0;
-    let mut start = 0;
+    let mut position = offset;
+    let mut start = offset;
     let mut boundries = vec![];
-    let mut in_break = false;
+    let mut in_break = true;
     let reader = BufReader::new(reader);
     for b in reader.bytes() {
         match b {
@@ -131,7 +151,7 @@ fn count_lines<T: Read + Seek>(reader: &mut MultiRead<T>) -> LineResult<Vec<Boun
         };
         position += 1;
     }
-    if position > 0 {
+    if position > offset && !in_break {
         boundries.push(Boundry{start:start, len: position - start});
     }
     Ok(boundries)
@@ -153,9 +173,7 @@ pub type LineResult<T> = std::result::Result<T, LineError>;
 
 impl <T: Read + Seek> Lines<T> {
     pub fn from_multiread(r: MultiRead<T>) -> LineResult<Lines<T>> {
-        let mut reader = r;
-        let boundries = count_lines(&mut reader)?;
-        Ok(Lines{reader, boundries})
+        r.lines()
     }
 
     pub fn len(&self) -> usize {
@@ -466,6 +484,7 @@ mod tests {
     #[test]
     fn line_reading() {
         let multiread = MultiRead::new(vec![
+            Cursor::new("\n\r\r\n"),
             Cursor::new(FIRST), 
             Cursor::new("\n\n\n\n"),
             Cursor::new(SECOND),
