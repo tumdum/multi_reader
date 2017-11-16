@@ -36,16 +36,20 @@ impl<R: Read + Seek> MultiRead<R> {
         let mut boundries : Vec<Boundry> = vec![];
         {
             let offsets = once(&0).chain(self.ends.iter());
-            for (r, o) in self.readers.iter_mut().zip(offsets) {
-                let local_boundries : Vec<Boundry> = count_lines(r, *o as usize)?;
-                let skip = match (boundries.last_mut(), local_boundries.first()) {
+            let local_boundries : std::result::Result<Vec<Vec<Boundry>>, _> = self.readers
+                .iter_mut()
+                .zip(offsets)
+                .map(|pair| count_lines(pair.0, *pair.1 as usize)).collect();
+
+            for local_boundry in local_boundries? {
+                let skip = match (boundries.last_mut(), local_boundry.first()) {
                     (Some(ref mut last), Some(next)) if (last.start + last.len) == next.start => {
                         last.len += next.len;
                         1
                     }
                     _ => 0
                 };
-                boundries.extend(local_boundries.into_iter().skip(skip));
+                boundries.extend(local_boundry.into_iter().skip(skip));
             }
         }
         Ok(Lines{reader: self, boundries: boundries})
