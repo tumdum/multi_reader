@@ -1,7 +1,6 @@
 extern crate rayon;
 
 use std::io::{BufReader,Error,ErrorKind,Read,Result,Seek,SeekFrom};
-use std::iter::once;
 
 use rayon::prelude::*;
 
@@ -18,7 +17,7 @@ fn get_size<R: Seek>(r: &mut R) -> Result<u64> {
     Ok(size)
 }
 
-impl<R: Read + Seek> MultiRead<R> {
+impl<R: Read + Seek + Send> MultiRead<R> {
     pub fn new<T: IntoIterator<Item=R>>(rs: T) -> Result<MultiRead<R>> {
         let mut readers = vec![];
         let mut ends = vec![];
@@ -39,7 +38,7 @@ impl<R: Read + Seek> MultiRead<R> {
     pub fn lines(mut self) -> LineResult<Lines<R>> {
         let mut boundries : Vec<Boundry> = vec![];
         {
-            let offsets = once(&0).chain(self.ends.iter());
+            let offsets = rayon::iter::once(&0).chain(self.ends.par_iter());
             let local_boundries : std::result::Result<Vec<Vec<Boundry>>, _> = self.readers
                 .par_iter_mut()
                 .zip(offsets)
@@ -179,7 +178,7 @@ impl From<std::io::Error> for LineError {
 
 pub type LineResult<T> = std::result::Result<T, LineError>;
 
-impl <T: Read + Seek> Lines<T> {
+impl <T: Read + Seek + Send> Lines<T> {
     pub fn from_multiread(r: MultiRead<T>) -> LineResult<Lines<T>> {
         r.lines()
     }
