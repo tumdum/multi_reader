@@ -38,7 +38,7 @@ impl<R: Read + Seek + Send> MultiRead<R> {
 
     fn read_line(&mut self, line: &Line) -> LineResult<Vec<u8>> {
         match line {
-            &Line::Copy(ref c) => Ok(c.clone()),
+            &Line::Copy(ref c) => Ok(*c.clone()),
             &Line::Boundary{start, len} => {
                 self.seek(SeekFrom::Start(start as u64))?;
                 // TODO: no TryFrom<u32> for usize on stable
@@ -84,7 +84,7 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                             start_from = 1;
                         }
                     }
-                    boundaries.push(Line::Copy(self.read_line(&last_boundry.unwrap())?));
+                    boundaries.push(Line::Copy(Box::new(self.read_line(&last_boundry.unwrap())?)));
                 }
 
                 let mut end = b.len();
@@ -181,8 +181,7 @@ impl<S: Seek> Seek for MultiRead<S> {
 #[derive(Debug,Clone)]
 enum Line {
     Boundary { start: usize, len: u32 },
-    // TODO: cheaper in memory but less ergonomic to use: Copy(Box<String>)
-    Copy(Vec<u8>)
+    Copy(Box<Vec<u8>>)
 }
 
 pub struct Lines<R> {
@@ -612,8 +611,7 @@ mod tests {
         let mut lines = Lines::from_multiread(multiread).unwrap();
         assert!(lines.line(3).is_err());
         assert_eq!(std::mem::align_of::<Line>(), 8);
-        // TODO: see enum Line: assert_eq!(std::mem::size_of::<Line>(), 16);
-        assert_eq!(std::mem::size_of::<Line>(), 32);
+        assert_eq!(std::mem::size_of::<Line>(), 16);
     }
 
     #[test]
