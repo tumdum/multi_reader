@@ -39,7 +39,7 @@ impl<R: Read + Seek + Send> MultiRead<R> {
     fn read_line(&mut self, line: &Line) -> LineResult<Vec<u8>> {
         match line {
             &Line::Copy(ref c) => Ok(c.clone()),
-            &Line::Boundry{start, len} => {
+            &Line::Boundary{start, len} => {
                 self.seek(SeekFrom::Start(start as u64))?;
                 // TODO: no TryFrom<u32> for usize on stable
                 // https://github.com/rust-lang/rust/issues/33417
@@ -51,68 +51,68 @@ impl<R: Read + Seek + Send> MultiRead<R> {
     }
 
     pub fn lines(mut self) -> LineResult<Lines<R>> {
-        let mut boundries : Vec<Line> = vec![];
+        let mut boundaries : Vec<Line> = vec![];
         {
-            let mut local_boundries;
+            let mut local_boundaries;
             {
                 let offsets = rayon::iter::once(&0).chain(self.ends.par_iter());
                 let tmp : std::result::Result<Vec<Vec<Line>>, _> = self.readers
                     .par_iter_mut()
                     .zip(offsets)
-                    .map(|pair| find_lines_boundries(pair.0, *pair.1 as usize))
+                    .map(|pair| find_lines_boundaries(pair.0, *pair.1 as usize))
                     .collect();
-                local_boundries = tmp?;
+                local_boundaries = tmp?;
             }
 
             // None when last line in previous buffer did not end at the end of
             // buffer.
             let mut last_boundry = None;
-            for (mut b, i) in local_boundries.drain(..).zip(0..) {
+            for (mut b, i) in local_boundaries.drain(..).zip(0..) {
                 let mut start_from = 0;
-                if let Some(Line::Boundry{start, len}) = last_boundry {
-                    if let Some(&Line::Boundry{start: new_start, len: new_len}) = b.first() {
+                if let Some(Line::Boundary{start, len}) = last_boundry {
+                    if let Some(&Line::Boundary{start: new_start, len: new_len}) = b.first() {
                         if start + len as usize == new_start {
 /*
  * Line from previous buffer ended where the buffer ended and first line of 
- * current buffer starts at the beggining. Which means that those two lines are
- * in fact one line that crosses buffers boundries.
+ * current buffer starts at the beginning. Which means that those two lines are
+ * in fact one line that crosses buffers foundries.
  */
-                            last_boundry = Some(Line::Boundry{start: start, len: len + new_len});
+                            last_boundry = Some(Line::Boundary{start: start, len: len + new_len});
                             if b.len() == 1 {
                                 continue
                             }
                             start_from = 1;
                         }
                     }
-                    boundries.push(Line::Copy(self.read_line(&last_boundry.unwrap())?));
+                    boundaries.push(Line::Copy(self.read_line(&last_boundry.unwrap())?));
                 }
 
                 let mut end = b.len();
                 last_boundry = None;
-                if let Some(&Line::Boundry{start, len}) = b.last() {
+                if let Some(&Line::Boundary{start, len}) = b.last() {
                     if (start+(len as usize)) as u64  >= self.ends[i] {
 /*
- * The last boundry of line reaches end of buffer. So we are unable to determine
+ * The last boundary of line reaches end of buffer. So we are unable to determine
  * if it is real end of line or maybe the line continues in the next reader.  
  * This means that we can't insert it as is and we need to see beginning of the
  * next buffer.
  */
                         end -= 1;
-                        last_boundry = Some(Line::Boundry{start, len});
+                        last_boundry = Some(Line::Boundary{start, len});
                     }
                 }
-                boundries.extend(b.drain(start_from..end));
+                boundaries.extend(b.drain(start_from..end));
             }
             match (last_boundry, self.ends.last()) {
-                (Some(Line::Boundry{start, len}), Some(end)) => {
+                (Some(Line::Boundary{start, len}), Some(end)) => {
                     if (start + len as usize) as u64 == *end {
-                        boundries.push(Line::Boundry{start, len});
+                        boundaries.push(Line::Boundary{start, len});
                     }
                 }
                 _ => {},
             }
         }
-        Ok(Lines{reader: self, boundries: boundries})
+        Ok(Lines{reader: self, boundaries: boundaries})
     }
 }
 
@@ -180,29 +180,29 @@ impl<S: Seek> Seek for MultiRead<S> {
 
 #[derive(Debug,Clone)]
 enum Line {
-    Boundry { start: usize, len: u32 },
+    Boundary { start: usize, len: u32 },
     // TODO: cheaper in memory but less ergonomic to use: Copy(Box<String>)
     Copy(Vec<u8>)
 }
 
 pub struct Lines<R> {
     reader: MultiRead<R>,
-    boundries: Vec<Line>
+    boundaries: Vec<Line>
 }
 
-fn find_lines_boundries<R: Read>(reader: &mut R, offset: usize) -> LineResult<Vec<Line>> {
+fn find_lines_boundaries<R: Read>(reader: &mut R, offset: usize) -> LineResult<Vec<Line>> {
     // TODO: is unicode important here?
     // TODO: run on threads for each chunk in multireader
     let mut position = offset;
     let mut start = offset;
-    let mut boundries = vec![];
+    let mut boundaries = vec![];
     let mut in_break = true;
     let reader = BufReader::new(reader);
     for b in reader.bytes() {
         match b {
             Ok(b'\n') | Ok(b'\r') => {
                 if !in_break {
-                    boundries.push(Line::Boundry{start: start, len: (position-start) as u32});
+                    boundaries.push(Line::Boundary{start: start, len: (position-start) as u32});
                     in_break = true;
                 }
             }
@@ -217,9 +217,9 @@ fn find_lines_boundries<R: Read>(reader: &mut R, offset: usize) -> LineResult<Ve
         position += 1;
     }
     if position > offset && !in_break {
-        boundries.push(Line::Boundry{start:start, len: (position - start) as u32});
+        boundaries.push(Line::Boundary{start:start, len: (position - start) as u32});
     }
-    Ok(boundries)
+    Ok(boundaries)
 }
 
 #[derive(Debug)]
@@ -242,14 +242,14 @@ impl <T: Read + Seek + Send> Lines<T> {
     }
 
     pub fn len(&self) -> usize {
-        self.boundries.len()
+        self.boundaries.len()
     }
 
     pub fn line(&mut self, line: usize) -> LineResult<Vec<u8>> {
         if line >= self.len() {
             return Err(LineError::OutOfBounds(line))
         }
-        self.reader.read_line(&self.boundries[line])
+        self.reader.read_line(&self.boundaries[line])
     }
 }
 
