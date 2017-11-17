@@ -1,4 +1,5 @@
 extern crate rayon;
+extern crate rand;
 
 use std::io::{BufReader,Error,ErrorKind,Read,Result,Seek,SeekFrom};
 
@@ -58,16 +59,24 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                 let tmp : std::result::Result<Vec<Vec<Line>>, _> = self.readers
                     .par_iter_mut()
                     .zip(offsets)
-                    .map(|pair| count_lines(pair.0, *pair.1 as usize)).collect();
+                    .map(|pair| find_lines_boundries(pair.0, *pair.1 as usize))
+                    .collect();
                 local_boundries = tmp?;
             }
 
+            // None when last line in previous buffer did not end at the end of
+            // buffer.
             let mut last_boundry = None;
             for (mut b, i) in local_boundries.drain(..).zip(0..) {
                 let mut start_from = 0;
                 if let Some(Line::Boundry{start, len}) = last_boundry {
                     if let Some(&Line::Boundry{start: new_start, len: new_len}) = b.first() {
                         if start + len as usize == new_start {
+/*
+ * Line from previous buffer ended where the buffer ended and first line of 
+ * current buffer starts at the beggining. Which means that those two lines are
+ * in fact one line that crosses buffers boundries.
+ */
                             last_boundry = Some(Line::Boundry{start: start, len: len + new_len});
                             if b.len() == 1 {
                                 continue
@@ -75,19 +84,23 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                             start_from = 1;
                         }
                     }
-                    if start_from == 0 {
-                        let line = self.read_line(&Line::Boundry{start, len})?;
-                        boundries.push(Line::Copy(line));
-                    }
+                    boundries.push(Line::Copy(self.read_line(&last_boundry.unwrap())?));
                 }
 
                 let mut end = b.len();
+                last_boundry = None;
                 if let Some(&Line::Boundry{start, len}) = b.last() {
                     if (start+(len as usize)) as u64  >= self.ends[i] {
+/*
+ * The last boundry of line reaches end of buffer. So we are unable to determine
+ * if it is real end of line or maybe the line continues in the next reader.  
+ * This means that we can't insert it as is and we need to see beginning of the
+ * next buffer.
+ */
                         end -= 1;
+                        last_boundry = Some(Line::Boundry{start, len});
                     }
                 }
-                last_boundry = b.last().cloned();
                 boundries.extend(b.drain(start_from..end));
             }
             match (last_boundry, self.ends.last()) {
@@ -177,7 +190,7 @@ pub struct Lines<R> {
     boundries: Vec<Line>
 }
 
-fn count_lines<R: Read>(reader: &mut R, offset: usize) -> LineResult<Vec<Line>> {
+fn find_lines_boundries<R: Read>(reader: &mut R, offset: usize) -> LineResult<Vec<Line>> {
     // TODO: is unicode important here?
     // TODO: run on threads for each chunk in multireader
     let mut position = offset;
@@ -244,6 +257,7 @@ impl <T: Read + Seek + Send> Lines<T> {
 mod tests {
     use super::*;
     use std::io::{Cursor, Error, ErrorKind};
+    use rand::Rng;
 
     const DEFAULT_SIZE : u64 = 100;
 
@@ -546,6 +560,47 @@ mod tests {
         assert_eq!(LAST, String::from_utf8(lines.line(2).unwrap()).unwrap());
         assert_eq!("foo bar baz", String::from_utf8(lines.line(3).unwrap()).unwrap());
         assert_eq!("test", String::from_utf8(lines.line(4).unwrap()).unwrap());
+    }
+
+    #[test]
+    fn random_split_line_reading() {
+        for _ in 0..1000 {
+            let mut rng = rand::thread_rng();
+            let input = "aaaa\nb\n\nccc\n\rdddddddd\neeee\nf\ng\rh\n\niiiiiii\r\rjjj\rkkkkkkkkkkkkkkk";
+            let split = rng.gen_range(0, input.len());
+            let (x,y) = input.split_at(split);
+            if x.len() == 0 {
+                continue
+            }
+            let split_x = rng.gen_range(0, x.len());
+            let (a,b) = x.split_at(split_x);
+            if y.len() == 0 {
+                continue
+            }
+            let split_y = rng.gen_range(0, y.len());
+            let (c,d) = y.split_at(split_y);
+            let multiread = MultiRead::new(vec![
+                Cursor::new(a.to_owned().into_bytes()),
+                Cursor::new(b.to_owned().into_bytes()),
+                Cursor::new(c.to_owned().into_bytes()),
+                Cursor::new(d.to_owned().into_bytes())
+            ]).unwrap();
+            let mut lines = Lines::from_multiread(multiread).unwrap();
+
+            assert_eq!("aaaa",              String::from_utf8(lines.line(0).unwrap()).unwrap());
+            assert_eq!("b",                 String::from_utf8(lines.line(1).unwrap()).unwrap());
+            assert_eq!("ccc",               String::from_utf8(lines.line(2).unwrap()).unwrap());
+            assert_eq!("dddddddd",          String::from_utf8(lines.line(3).unwrap()).unwrap());
+            assert_eq!("eeee",              String::from_utf8(lines.line(4).unwrap()).unwrap());
+            assert_eq!("f",                 String::from_utf8(lines.line(5).unwrap()).unwrap());
+            assert_eq!("g",                 String::from_utf8(lines.line(6).unwrap()).unwrap());
+            assert_eq!("h",                 String::from_utf8(lines.line(7).unwrap()).unwrap());
+            assert_eq!("iiiiiii",           String::from_utf8(lines.line(8).unwrap()).unwrap());
+            assert_eq!("jjj",               String::from_utf8(lines.line(9).unwrap()).unwrap());
+            assert_eq!("kkkkkkkkkkkkkkk",   String::from_utf8(lines.line(10).unwrap()).unwrap());
+
+            assert_eq!(11, lines.len());
+        }
     }
 
     #[test]
