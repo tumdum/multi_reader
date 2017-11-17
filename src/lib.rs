@@ -35,20 +35,24 @@ impl<R: Read + Seek + Send> MultiRead<R> {
         Ok(MultiRead{readers, ends, reader, total_size})
     }
 
-    fn read_line(&mut self, start: usize, len: u32) -> LineResult<Vec<u8>> {
-        self.seek(SeekFrom::Start(start as u64))?;
-
-        // TODO: no TryFrom<u32> for usize on stable
-        // https://github.com/rust-lang/rust/issues/33417
-        let mut buf = vec![0; len as usize];
-        self.read_exact(&mut buf)?;
-        Ok(buf)
+    fn read_line(&mut self, line: &Line) -> LineResult<Vec<u8>> {
+        match line {
+            &Line::Copy(ref c) => Ok(c.clone()),
+            &Line::Boundry{start, len} => {
+                self.seek(SeekFrom::Start(start as u64))?;
+                // TODO: no TryFrom<u32> for usize on stable
+                // https://github.com/rust-lang/rust/issues/33417
+                let mut buf = vec![0; len as usize];
+                self.read_exact(&mut buf)?;
+                Ok(buf)
+            }
+        }
     }
 
     pub fn lines(mut self) -> LineResult<Lines<R>> {
         let mut boundries : Vec<Line> = vec![];
         {
-            let mut local_boundries = vec![];
+            let mut local_boundries;
             {
                 let offsets = rayon::iter::once(&0).chain(self.ends.par_iter());
                 let tmp : std::result::Result<Vec<Vec<Line>>, _> = self.readers
@@ -58,27 +62,25 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                 local_boundries = tmp?;
             }
 
-            let mut last_boundry : Option<Line> = None;
+            let mut last_boundry = None;
             for (mut b, i) in local_boundries.drain(..).zip(0..) {
                 let mut start_from = 0;
                 if let Some(Line::Boundry{start, len}) = last_boundry {
                     if let Some(&Line::Boundry{start: new_start, len: new_len}) = b.first() {
                         if start + len as usize == new_start {
                             last_boundry = Some(Line::Boundry{start: start, len: len + new_len});
+                            if b.len() == 1 {
+                                continue
+                            }
                             start_from = 1;
                         }
-                        else {
-                            boundries.push(Line::Boundry{start, len});
-                            last_boundry = None;
-                        }
-                    } else {
-                        boundries.push(Line::Boundry{start, len});
-                        last_boundry = None;
+                    }
+                    if start_from == 0 {
+                        let line = self.read_line(&Line::Boundry{start, len})?;
+                        boundries.push(Line::Copy(line));
                     }
                 }
-                if start_from == 1 && b.len() == 1 {
-                    continue
-                }
+
                 let mut end = b.len();
                 if let Some(&Line::Boundry{start, len}) = b.last() {
                     if (start+(len as usize)) as u64  >= self.ends[i] {
@@ -88,8 +90,13 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                 last_boundry = b.last().cloned();
                 boundries.extend(b.drain(start_from..end));
             }
-            if let Some(Line::Boundry{start, len}) = last_boundry {
-                boundries.push(Line::Boundry{start, len});
+            match (last_boundry, self.ends.last()) {
+                (Some(Line::Boundry{start, len}), Some(end)) => {
+                    if (start + len as usize) as u64 == *end {
+                        boundries.push(Line::Boundry{start, len});
+                    }
+                }
+                _ => {},
             }
         }
         Ok(Lines{reader: self, boundries: boundries})
@@ -162,7 +169,7 @@ impl<S: Seek> Seek for MultiRead<S> {
 enum Line {
     Boundry { start: usize, len: u32 },
     // TODO: cheaper in memory but less ergonomic to use: Copy(Box<String>)
-    Copy(String)
+    Copy(Vec<u8>)
 }
 
 pub struct Lines<R> {
@@ -229,13 +236,7 @@ impl <T: Read + Seek + Send> Lines<T> {
         if line >= self.len() {
             return Err(LineError::OutOfBounds(line))
         }
-        let ref boundry = self.boundries[line];
-        match self.boundries[line] {
-            Line::Boundry{start, len} => {
-                return self.reader.read_line(start, len);
-            },
-            Line::Copy(_) => unimplemented!(),
-        }
+        self.reader.read_line(&self.boundries[line])
     }
 }
 
@@ -526,7 +527,7 @@ mod tests {
     }
 
     #[test]
-    fn line_readingXXX() {
+    fn line_reading() {
         let multiread = MultiRead::new(vec![
             Cursor::new("\n\r\r\n"),
             Cursor::new(FIRST), 
@@ -535,13 +536,16 @@ mod tests {
             Cursor::new("\r\n\n\r\n"), 
             Cursor::new(LAST),
             Cursor::new("\r\r\n\n"),
-            Cursor::new("foo "), Cursor::new("bar "), Cursor::new("baz")]).unwrap();
+            Cursor::new("foo "), Cursor::new("bar "), Cursor::new("baz"),
+            Cursor::new("\ntest\n")
+        ]).unwrap();
         let mut lines = Lines::from_multiread(multiread).unwrap();
-        assert_eq!(4, lines.len());
+        assert_eq!(5, lines.len());
         assert_eq!(FIRST, String::from_utf8(lines.line(0).unwrap()).unwrap());
         assert_eq!(SECOND, String::from_utf8(lines.line(1).unwrap()).unwrap());
         assert_eq!(LAST, String::from_utf8(lines.line(2).unwrap()).unwrap());
         assert_eq!("foo bar baz", String::from_utf8(lines.line(3).unwrap()).unwrap());
+        assert_eq!("test", String::from_utf8(lines.line(4).unwrap()).unwrap());
     }
 
     #[test]
