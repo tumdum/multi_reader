@@ -35,24 +35,61 @@ impl<R: Read + Seek + Send> MultiRead<R> {
         Ok(MultiRead{readers, ends, reader, total_size})
     }
 
-    pub fn lines(mut self) -> LineResult<Lines<R>> {
-        let mut boundries : Vec<Boundry> = vec![];
-        {
-            let offsets = rayon::iter::once(&0).chain(self.ends.par_iter());
-            let local_boundries : std::result::Result<Vec<Vec<Boundry>>, _> = self.readers
-                .par_iter_mut()
-                .zip(offsets)
-                .map(|pair| count_lines(pair.0, *pair.1 as usize)).collect();
+    fn read_line(&mut self, start: usize, len: u32) -> LineResult<Vec<u8>> {
+        self.seek(SeekFrom::Start(start as u64))?;
 
-            for local_boundry in local_boundries? {
-                let skip = match (boundries.last_mut(), local_boundry.first()) {
-                    (Some(ref mut last), Some(next)) if (last.start + last.len) == next.start => {
-                        last.len += next.len;
-                        1
+        // TODO: no TryFrom<u32> for usize on stable
+        // https://github.com/rust-lang/rust/issues/33417
+        let mut buf = vec![0; len as usize];
+        self.read_exact(&mut buf)?;
+        Ok(buf)
+    }
+
+    pub fn lines(mut self) -> LineResult<Lines<R>> {
+        let mut boundries : Vec<Line> = vec![];
+        {
+            let mut local_boundries = vec![];
+            {
+                let offsets = rayon::iter::once(&0).chain(self.ends.par_iter());
+                let tmp : std::result::Result<Vec<Vec<Line>>, _> = self.readers
+                    .par_iter_mut()
+                    .zip(offsets)
+                    .map(|pair| count_lines(pair.0, *pair.1 as usize)).collect();
+                local_boundries = tmp?;
+            }
+
+            let mut last_boundry : Option<Line> = None;
+            for (mut b, i) in local_boundries.drain(..).zip(0..) {
+                let mut start_from = 0;
+                if let Some(Line::Boundry{start, len}) = last_boundry {
+                    if let Some(&Line::Boundry{start: new_start, len: new_len}) = b.first() {
+                        if start + len as usize == new_start {
+                            last_boundry = Some(Line::Boundry{start: start, len: len + new_len});
+                            start_from = 1;
+                        }
+                        else {
+                            boundries.push(Line::Boundry{start, len});
+                            last_boundry = None;
+                        }
+                    } else {
+                        boundries.push(Line::Boundry{start, len});
+                        last_boundry = None;
                     }
-                    _ => 0
-                };
-                boundries.extend(local_boundry.into_iter().skip(skip));
+                }
+                if start_from == 1 && b.len() == 1 {
+                    continue
+                }
+                let mut end = b.len();
+                if let Some(&Line::Boundry{start, len}) = b.last() {
+                    if (start+(len as usize)) as u64  >= self.ends[i] {
+                        end -= 1;
+                    }
+                }
+                last_boundry = b.last().cloned();
+                boundries.extend(b.drain(start_from..end));
+            }
+            if let Some(Line::Boundry{start, len}) = last_boundry {
+                boundries.push(Line::Boundry{start, len});
             }
         }
         Ok(Lines{reader: self, boundries: boundries})
@@ -121,18 +158,19 @@ impl<S: Seek> Seek for MultiRead<S> {
     }
 }
 
-#[derive(Debug)]
-struct Boundry {
-    start: usize,
-    len: usize,
+#[derive(Debug,Clone)]
+enum Line {
+    Boundry { start: usize, len: u32 },
+    // TODO: cheaper in memory but less ergonomic to use: Copy(Box<String>)
+    Copy(String)
 }
 
 pub struct Lines<R> {
     reader: MultiRead<R>,
-    boundries: Vec<Boundry>
+    boundries: Vec<Line>
 }
 
-fn count_lines<R: Read>(reader: &mut R, offset: usize) -> LineResult<Vec<Boundry>> {
+fn count_lines<R: Read>(reader: &mut R, offset: usize) -> LineResult<Vec<Line>> {
     // TODO: is unicode important here?
     // TODO: run on threads for each chunk in multireader
     let mut position = offset;
@@ -144,7 +182,7 @@ fn count_lines<R: Read>(reader: &mut R, offset: usize) -> LineResult<Vec<Boundry
         match b {
             Ok(b'\n') | Ok(b'\r') => {
                 if !in_break {
-                    boundries.push(Boundry{start: start, len: position-start});
+                    boundries.push(Line::Boundry{start: start, len: (position-start) as u32});
                     in_break = true;
                 }
             }
@@ -159,7 +197,7 @@ fn count_lines<R: Read>(reader: &mut R, offset: usize) -> LineResult<Vec<Boundry
         position += 1;
     }
     if position > offset && !in_break {
-        boundries.push(Boundry{start:start, len: position - start});
+        boundries.push(Line::Boundry{start:start, len: (position - start) as u32});
     }
     Ok(boundries)
 }
@@ -192,13 +230,12 @@ impl <T: Read + Seek + Send> Lines<T> {
             return Err(LineError::OutOfBounds(line))
         }
         let ref boundry = self.boundries[line];
-        self.reader.seek(SeekFrom::Start(boundry.start as u64))?;
-
-        // TODO: no TryFrom<u32> for usize on stable
-        // https://github.com/rust-lang/rust/issues/33417
-        let mut buf = vec![0; boundry.len];
-        self.reader.read_exact(&mut buf)?;
-        Ok(buf)
+        match self.boundries[line] {
+            Line::Boundry{start, len} => {
+                return self.reader.read_line(start, len);
+            },
+            Line::Copy(_) => unimplemented!(),
+        }
     }
 }
 
@@ -489,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn line_reading() {
+    fn line_readingXXX() {
         let multiread = MultiRead::new(vec![
             Cursor::new("\n\r\r\n"),
             Cursor::new(FIRST), 
@@ -515,8 +552,9 @@ mod tests {
             Cursor::new(LAST)]).unwrap();
         let mut lines = Lines::from_multiread(multiread).unwrap();
         assert!(lines.line(3).is_err());
-        assert_eq!(std::mem::align_of::<Boundry>(), 8);
-        assert_eq!(std::mem::size_of::<Boundry>(), 16);
+        assert_eq!(std::mem::align_of::<Line>(), 8);
+        // TODO: see enum Line: assert_eq!(std::mem::size_of::<Line>(), 16);
+        assert_eq!(std::mem::size_of::<Line>(), 32);
     }
 
     #[test]
