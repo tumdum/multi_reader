@@ -59,7 +59,7 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                 let tmp : std::result::Result<Vec<Vec<Line>>, _> = self.readers
                     .par_iter_mut()
                     .zip(offsets)
-                    .map(|pair| find_lines_boundaries(pair.0, *pair.1 as usize))
+                    .map(|pair| find_lines_boundaries(pair.0, *pair.1))
                     .collect();
                 local_boundaries = tmp?;
             }
@@ -71,7 +71,7 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                 let mut start_from = 0;
                 if let Some(Line::Boundary{start, len}) = last_boundry {
                     if let Some(&Line::Boundary{start: new_start, len: new_len}) = b.first() {
-                        if start + len as usize == new_start {
+                        if start + len as u64 == new_start {
 /*
  * Line from previous buffer ended where the buffer ended and first line of 
  * current buffer starts at the beginning. Which means that those two lines are
@@ -90,7 +90,7 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                 let mut end = b.len();
                 last_boundry = None;
                 if let Some(&Line::Boundary{start, len}) = b.last() {
-                    if (start+(len as usize)) as u64  >= self.ends[i] {
+                    if start+len as u64  >= self.ends[i] {
 /*
  * The last boundary of line reaches end of buffer. So we are unable to determine
  * if it is real end of line or maybe the line continues in the next reader.  
@@ -105,7 +105,7 @@ impl<R: Read + Seek + Send> MultiRead<R> {
             }
             match (last_boundry, self.ends.last()) {
                 (Some(Line::Boundary{start, len}), Some(end)) => {
-                    if (start + len as usize) as u64 == *end {
+                    if start + len as u64 == *end {
                         boundaries.push(Line::Boundary{start, len});
                     }
                 }
@@ -180,7 +180,7 @@ impl<S: Seek> Seek for MultiRead<S> {
 
 #[derive(Debug,Clone)]
 enum Line {
-    Boundary { start: usize, len: u32 },
+    Boundary { start: u64, len: u32 },
     Copy(Box<Vec<u8>>)
 }
 
@@ -189,7 +189,7 @@ pub struct Lines<R> {
     boundaries: Vec<Line>
 }
 
-fn find_lines_boundaries<R: Read>(reader: &mut R, offset: usize) -> LineResult<Vec<Line>> {
+fn find_lines_boundaries<R: Read>(reader: &mut R, offset: u64) -> LineResult<Vec<Line>> {
     // TODO: is unicode important here?
     // TODO: run on threads for each chunk in multireader
     let mut position = offset;
