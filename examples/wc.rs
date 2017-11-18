@@ -1,14 +1,15 @@
 extern crate multi_read;
 
-use multi_read::{MultiRead,Lines};
+use multi_read::*;
+use multi_read::lines;
 use std::fs::File;
 
-fn run() -> multi_read::LineResult<usize> {
+fn run() -> lines::LineResult<usize> {
     let inputs : std::result::Result<Vec<File>, _> = std::env::args()
         .skip(1)
         .map(|p| File::open(p))
         .collect();
-    Ok(Lines::from_multiread(MultiRead::new(inputs?)?)?.len())
+    Ok(lines::Lines::from_multiread(MultiRead::new(inputs?)?)?.len())
 }
 
 // Running this program on set of paths is 'equivalent' to counting non empty
