@@ -117,6 +117,44 @@ impl<R: Read + Seek + Send> MultiRead<R> {
         }
         Ok(Lines::new(self, boundaries))
     }
+
+    pub fn map<F, Ret>(&mut self, mut f: F, lines: &[Line]) -> LineResult<Vec<Ret>> where F: FnMut(&[u8]) -> Ret {
+        let mut ret = vec![];
+        let mut reader_index = 0;
+
+        let mut local_lines = vec![];
+        for line in lines {
+            match line {
+                &Line::Boundary{start, len} => {
+                    let end = start + len as u64;
+                    if end <= self.ends[reader_index] {
+                        local_lines.push(Line::Boundary{start, len});
+                    } else {
+                        for l in local_lines {
+                            ret.push(f(&self.read_line(&l)?));
+                        }
+                        local_lines = vec![Line::Boundary{start, len}];
+                        reader_index += 1;
+                    }
+                },
+                &Line::Copy(ref content) => {
+                    for l in local_lines {
+                        ret.push(f(&self.read_line(&l)?));
+                    }
+                    local_lines = vec![];
+                    reader_index += 1;
+
+                    ret.push(f(content.as_ref()));
+                }
+            }
+        }
+        for l in local_lines {
+            ret.push(f(&self.read_line(&l)?));
+        }
+
+
+        Ok(ret)
+    }
 }
 
 impl<R: Read> Read for MultiRead<R> {
@@ -528,6 +566,21 @@ mod tests {
             assert_eq!("kkkkkkkkkkkkkkk",   String::from_utf8(lines.line(10).unwrap()).unwrap());
 
             assert_eq!(11, lines.len());
+
+            let lengths = lines.map(|s| s.len()).unwrap();
+            assert_eq!(4, lengths[0]);
+            assert_eq!(1, lengths[1]);
+            assert_eq!(3, lengths[2]);
+            assert_eq!(8, lengths[3]);
+            assert_eq!(4, lengths[4]);
+            assert_eq!(1, lengths[5]);
+            assert_eq!(1, lengths[6]);
+            assert_eq!(1, lengths[7]);
+            assert_eq!(7, lengths[8]);
+            assert_eq!(3, lengths[9]);
+            assert_eq!(15, lengths[10]);
+
+            assert_eq!(11, lengths.len());
         }
     }
 
