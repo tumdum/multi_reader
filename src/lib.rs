@@ -548,4 +548,29 @@ mod tests {
         let multiread = MultiRead::new(vec![ErrorReturningReader{}]).unwrap();
         assert!(Lines::from_multiread(multiread).is_err());
     }
+    
+    #[test]
+    fn lines_mapping() {
+        let multiread = MultiRead::new(vec![
+            Cursor::new("\n\r\r\n"),
+            Cursor::new(FIRST), 
+            Cursor::new("\n\n\n\n"),
+            Cursor::new(SECOND),
+            Cursor::new("\r\n\n\r\n"), 
+            Cursor::new(LAST),
+            Cursor::new("\r\r\n\n"),
+            Cursor::new("foo "), Cursor::new("bar "), Cursor::new("baz"),
+            Cursor::new("\ntest\n")
+        ]).unwrap();
+        let mut lines = Lines::from_multiread(multiread).unwrap();
+        let lengths = lines.map(|s| s.len()).unwrap();
+
+        assert_eq!(FIRST.len(),     lengths[0]);
+        assert_eq!(SECOND.len(),    lengths[1]);
+        assert_eq!(LAST.len(),      lengths[2]);
+        assert_eq!(11,              lengths[3]);
+        assert_eq!(4,               lengths[4]);
+
+        assert_eq!(5, lengths.len());
+    }
 }

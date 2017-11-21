@@ -53,9 +53,17 @@ pub struct Lines<R> {
     boundaries: Vec<Line>
 }
 
-impl<R> Lines<R> {
+impl<R: Read + Seek + Send> Lines<R> {
     pub fn new(reader: MultiRead<R>, boundaries: Vec<Line>) -> Lines<R> {
         Lines{reader, boundaries}
+    }
+
+    pub fn map<F, Ret>(&mut self, mut f: F) -> LineResult<Vec<Ret>> where F: FnMut(&[u8]) -> Ret {
+        let mut result = vec![];
+        for boundry in &self.boundaries {
+            result.push(f(&self.reader.read_line(boundry)?));
+        }
+        Ok(result)
     }
 }
 
