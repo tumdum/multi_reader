@@ -132,6 +132,11 @@ impl<R: Read + Seek + Send> MultiRead<R> {
         Ok(LinesIndex::new(self, boundaries))
     }
 
+    pub fn filter_which<F>(&mut self, f: F, lines: &[Line]) -> LineResult<Vec<usize>> 
+        where F: FnMut(&[u8]) -> bool {
+        Ok(self.map(f, lines)?.into_iter().enumerate().filter(|&(_,b)| b).map(|(v,_)| v).collect())
+    }
+
     pub fn map<F, Ret>(&mut self, mut f: F, lines: &[Line]) -> LineResult<Vec<Ret>> 
         where F: FnMut(&[u8]) -> Ret {
         let mut ret = vec![];
@@ -167,10 +172,9 @@ impl<R: Read + Seek + Send> MultiRead<R> {
         for l in local_lines {
             ret.push(f(&self.read_line(&l)?));
         }
-
-
         Ok(ret)
     }
+    
 }
 
 impl<R: Read> Read for MultiRead<R> {
@@ -641,5 +645,10 @@ mod tests {
         assert_eq!(4,               lengths[4]);
 
         assert_eq!(5, lengths.len());
+
+        let positive = lines.filter_which(|s| s.len() % 2 == 0).unwrap();
+        assert_eq!(2, positive.len());
+        assert_eq!(0, positive[0]);
+        assert_eq!(4, positive[1]);
     }
 }
