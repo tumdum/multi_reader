@@ -21,6 +21,18 @@ fn get_size<R: Seek>(r: &mut R) -> Result<u64> {
     Ok(size)
 }
 
+fn read_boundry<T: Read + Seek>(reader: &mut T, b: &Line) -> LineResult<Vec<u8>> {
+    if let &Line::Boundary{start, len} = b {
+        reader.seek(SeekFrom::Start(start as u64))?;
+        // TODO: no TryFrom<u32> for usize on stable
+        // https://github.com/rust-lang/rust/issues/33417
+        let mut buf = vec![0; len as usize];
+        reader.read_exact(&mut buf)?;
+        return Ok(buf);
+    }
+    unreachable!();
+}
+
 impl<R: Read + Seek + Send> MultiRead<R> {
     pub fn new<T: IntoIterator<Item=R>>(rs: T) -> Result<MultiRead<R>> {
         let mut readers = vec![];
@@ -36,19 +48,22 @@ impl<R: Read + Seek + Send> MultiRead<R> {
             ends.push(total_size);
         }
         let reader = 0;
+        debug_assert!(readers.len() == ends.len());
         Ok(MultiRead{readers, ends, reader, total_size})
     }
 
     fn read_line(&mut self, line: &Line) -> LineResult<Vec<u8>> {
         match line {
-            &Line::Copy(ref c) => Ok(*c.clone()),
+            &Line::Copy(ref c) => return Ok(*c.clone()),
             &Line::Boundary{start, len} => {
-                self.seek(SeekFrom::Start(start as u64))?;
-                // TODO: no TryFrom<u32> for usize on stable
-                // https://github.com/rust-lang/rust/issues/33417
-                let mut buf = vec![0; len as usize];
-                self.read_exact(&mut buf)?;
-                Ok(buf)
+                let mut reader_index = 0;
+                while self.ends.len() >= reader_index && self.ends[reader_index] < start + len as u64 {
+                    reader_index += 1;
+                }
+                let reader = &mut self.readers[reader_index];
+                let reader_start = if reader_index == 0 { 0 } else { self.ends[reader_index-1] };
+                let start = start - reader_start;
+                return Ok(read_boundry(reader, &Line::Boundary{start, len})?);
             }
         }
     }
@@ -87,7 +102,11 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                             start_from = 1;
                         }
                     }
-                    boundaries.push(Line::Copy(Box::new(self.read_line(&last_boundry.unwrap())?)));
+                    if let boundary @ Line::Boundary{..} = last_boundry.unwrap() {
+                        boundaries.push(Line::Copy(Box::new(read_boundry(&mut self,&boundary)?)));
+                    } else {
+                        unreachable!();
+                    }
                 }
 
                 let mut end = b.len();
@@ -106,13 +125,8 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                 }
                 boundaries.extend(b.drain(start_from..end));
             }
-            match (last_boundry, self.ends.last()) {
-                (Some(Line::Boundary{start, len}), Some(end)) => {
-                    if start + len as u64 == *end {
-                        boundaries.push(Line::Boundary{start, len});
-                    }
-                }
-                _ => {},
+            if let Some(boundary @ Line::Boundary{..}) = last_boundry {
+                boundaries.push(Line::Copy(Box::new(read_boundry(&mut self, &boundary)?)));
             }
         }
         Ok(Lines::new(self, boundaries))
@@ -123,6 +137,7 @@ impl<R: Read + Seek + Send> MultiRead<R> {
         let mut reader_index = 0;
 
         let mut local_lines = vec![];
+
         for line in lines {
             match line {
                 &Line::Boundary{start, len} => {
@@ -211,7 +226,7 @@ impl<S: Seek> Seek for MultiRead<S> {
                 }
                 let absolute_position = current as i64 + n;
                 if absolute_position < 0 {
-                    return Err(Error::new(ErrorKind::InvalidInput, "seek before beginning of raeder"))
+                    return Err(Error::new(ErrorKind::InvalidInput, "seek before beginning of reader"))
                 }
                 self.seek(SeekFrom::Start(absolute_position as u64))
             }
