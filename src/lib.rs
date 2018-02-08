@@ -68,7 +68,7 @@ impl<R: Read + Seek + Send> MultiRead<R> {
         }
     }
 
-    pub fn lines(mut self) -> LineResult<Lines<R>> {
+    pub fn lines(mut self) -> LineResult<LinesIndex<R>> {
         let mut boundaries : Vec<Line> = vec![];
         {
             let mut local_boundaries;
@@ -129,10 +129,11 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                 boundaries.push(Line::Copy(Box::new(read_boundry(&mut self, &boundary)?)));
             }
         }
-        Ok(Lines::new(self, boundaries))
+        Ok(LinesIndex::new(self, boundaries))
     }
 
-    pub fn map<F, Ret>(&mut self, mut f: F, lines: &[Line]) -> LineResult<Vec<Ret>> where F: FnMut(&[u8]) -> Ret {
+    pub fn map<F, Ret>(&mut self, mut f: F, lines: &[Line]) -> LineResult<Vec<Ret>> 
+        where F: FnMut(&[u8]) -> Ret {
         let mut ret = vec![];
         let mut reader_index = 0;
 
@@ -481,10 +482,10 @@ mod tests {
         }
     }
 
-    fn lines_from_string(s: &str) -> Lines<Cursor<&str>> {
+    fn lines_from_string(s: &str) -> LinesIndex<Cursor<&str>> {
         let full = Cursor::new(s);
         let sut = MultiRead::new(vec![full]).unwrap();
-        Lines::from_multiread(sut).unwrap()
+        LinesIndex::from_multiread(sut).unwrap()
     }
 
     #[test]
@@ -505,7 +506,7 @@ mod tests {
             Cursor::new(FIRST), 
             Cursor::new(SECOND),
             Cursor::new(LAST)]).unwrap();
-        let lines = Lines::from_multiread(multiread).unwrap();
+        let lines = LinesIndex::from_multiread(multiread).unwrap();
         assert_eq!(1, lines.len());
     }
 
@@ -534,7 +535,7 @@ mod tests {
             Cursor::new("foo "), Cursor::new("bar "), Cursor::new("baz"),
             Cursor::new("\ntest\n")
         ]).unwrap();
-        let mut lines = Lines::from_multiread(multiread).unwrap();
+        let mut lines = LinesIndex::from_multiread(multiread).unwrap();
         assert_eq!(5, lines.len());
         assert_eq!(FIRST, String::from_utf8(lines.line(0).unwrap()).unwrap());
         assert_eq!(SECOND, String::from_utf8(lines.line(1).unwrap()).unwrap());
@@ -566,7 +567,7 @@ mod tests {
                 Cursor::new(c.to_owned().into_bytes()),
                 Cursor::new(d.to_owned().into_bytes())
             ]).unwrap();
-            let mut lines = Lines::from_multiread(multiread).unwrap();
+            let mut lines = LinesIndex::from_multiread(multiread).unwrap();
 
             assert_eq!("aaaa",              String::from_utf8(lines.line(0).unwrap()).unwrap());
             assert_eq!("b",                 String::from_utf8(lines.line(1).unwrap()).unwrap());
@@ -605,7 +606,7 @@ mod tests {
             Cursor::new(FIRST), 
             Cursor::new(SECOND),
             Cursor::new(LAST)]).unwrap();
-        let mut lines = Lines::from_multiread(multiread).unwrap();
+        let mut lines = LinesIndex::from_multiread(multiread).unwrap();
         assert!(lines.line(3).is_err());
         assert_eq!(std::mem::align_of::<Line>(), 8);
         assert_eq!(std::mem::size_of::<Line>(), 16);
@@ -614,7 +615,7 @@ mod tests {
     #[test]
     fn lines_construction_with_failing_io() {
         let multiread = MultiRead::new(vec![ErrorReturningReader{}]).unwrap();
-        assert!(Lines::from_multiread(multiread).is_err());
+        assert!(LinesIndex::from_multiread(multiread).is_err());
     }
     
     #[test]
@@ -630,7 +631,7 @@ mod tests {
             Cursor::new("foo "), Cursor::new("bar "), Cursor::new("baz"),
             Cursor::new("\ntest\n")
         ]).unwrap();
-        let mut lines = Lines::from_multiread(multiread).unwrap();
+        let mut lines = LinesIndex::from_multiread(multiread).unwrap();
         let lengths = lines.map(|s| s.len()).unwrap();
 
         assert_eq!(FIRST.len(),     lengths[0]);

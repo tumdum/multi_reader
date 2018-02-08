@@ -48,14 +48,14 @@ pub fn find_lines_boundaries<R: Read>(reader: &mut R, offset: u64) -> LineResult
     Ok(boundaries)
 }
 
-pub struct Lines<R> {
+pub struct LinesIndex<R> {
     reader: MultiRead<R>,
     boundaries: Vec<Line>
 }
 
-impl<R: Read + Seek + Send> Lines<R> {
-    pub fn new(reader: MultiRead<R>, boundaries: Vec<Line>) -> Lines<R> {
-        Lines{reader, boundaries}
+impl<R: Read + Seek + Send> LinesIndex<R> {
+    pub fn new(reader: MultiRead<R>, boundaries: Vec<Line>) -> LinesIndex<R> {
+        LinesIndex{reader, boundaries}
     }
 
     pub fn map<F, Ret>(&mut self, f: F) -> LineResult<Vec<Ret>> where F: FnMut(&[u8]) -> Ret {
@@ -69,8 +69,8 @@ impl From<std::io::Error> for LineError {
     }
 }
 
-impl <T: Read + Seek + Send> Lines<T> {
-    pub fn from_multiread(r: MultiRead<T>) -> LineResult<Lines<T>> {
+impl <T: Read + Seek + Send> LinesIndex<T> {
+    pub fn from_multiread(r: MultiRead<T>) -> LineResult<LinesIndex<T>> {
         r.lines()
     }
 

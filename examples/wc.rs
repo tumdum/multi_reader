@@ -9,7 +9,7 @@ fn run() -> lines::LineResult<usize> {
         .skip(1)
         .map(|p| File::open(p))
         .collect();
-    Ok(lines::Lines::from_multiread(MultiRead::new(inputs?)?)?.len())
+    Ok(lines::LinesIndex::from_multiread(MultiRead::new(inputs?)?)?.len())
 }
 
 // Running this program on set of paths is 'equivalent' to counting non empty
