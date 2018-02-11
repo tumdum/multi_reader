@@ -4,12 +4,14 @@ extern crate rayon;
 extern crate rand;
 
 use std::io::{Error,ErrorKind,Read,Result,Seek,SeekFrom};
+use std::cell::RefCell;
+use std::ops::DerefMut;
 use lines::*;
 
 use rayon::prelude::*;
 
 pub struct MultiRead<R> {
-    readers: Vec<R>,
+    readers: Vec<RefCell<R>>,
     ends: Vec<u64>,
     reader: usize,
     total_size: u64,
@@ -43,7 +45,7 @@ impl<R: Read + Seek + Send> MultiRead<R> {
             if size == 0 {
                 continue;
             }
-            readers.push(r);
+            readers.push(RefCell::new(r));
             total_size += size;
             ends.push(total_size);
         }
@@ -52,7 +54,7 @@ impl<R: Read + Seek + Send> MultiRead<R> {
         Ok(MultiRead{readers, ends, reader, total_size})
     }
 
-    fn read_line(&mut self, line: &Line) -> LineResult<Vec<u8>> {
+    fn read_line(&self, line: &Line) -> LineResult<Vec<u8>> {
         match line {
             &Line::Copy(ref c) => return Ok(*c.clone()),
             &Line::Boundary{start, len} => {
@@ -60,10 +62,10 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                 while self.ends.len() >= reader_index && self.ends[reader_index] < start + len as u64 {
                     reader_index += 1;
                 }
-                let reader = &mut self.readers[reader_index];
+                let mut reader = self.readers[reader_index].borrow_mut();
                 let reader_start = if reader_index == 0 { 0 } else { self.ends[reader_index-1] };
                 let start = start - reader_start;
-                return Ok(read_boundry(reader, &Line::Boundary{start, len})?);
+                return Ok(read_boundry(reader.deref_mut(), &Line::Boundary{start, len})?);
             }
         }
     }
@@ -77,7 +79,7 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                 let tmp : std::result::Result<Vec<Vec<Line>>, _> = self.readers
                     .par_iter_mut()
                     .zip(offsets)
-                    .map(|pair| find_lines_boundaries(pair.0, *pair.1))
+                    .map(|pair| find_lines_boundaries(pair.0.borrow_mut().deref_mut(), *pair.1))
                     .collect();
                 local_boundaries = tmp?;
             }
@@ -132,12 +134,12 @@ impl<R: Read + Seek + Send> MultiRead<R> {
         Ok(LinesIndex::new(self, boundaries))
     }
 
-    pub fn filter_which<F>(&mut self, f: F, lines: &[Line]) -> LineResult<Vec<usize>> 
+    pub fn filter_which<F>(&self, f: F, lines: &[Line]) -> LineResult<Vec<usize>> 
         where F: FnMut(&[u8]) -> bool {
         Ok(self.map(f, lines)?.into_iter().enumerate().filter(|&(_,b)| b).map(|(v,_)| v).collect())
     }
 
-    pub fn map<F, Ret>(&mut self, mut f: F, lines: &[Line]) -> LineResult<Vec<Ret>> 
+    pub fn map<F, Ret>(&self, mut f: F, lines: &[Line]) -> LineResult<Vec<Ret>> 
         where F: FnMut(&[u8]) -> Ret {
         let mut ret = vec![];
         let mut reader_index = 0;
@@ -182,7 +184,8 @@ impl<R: Read> Read for MultiRead<R> {
         if self.reader >= self.readers.len() {
             return Ok(0)
         }
-        match self.readers[self.reader].read(buf) {
+        let val = self.readers[self.reader].borrow_mut().read(buf);
+        match val {
             Ok(0) => {
                 // NOTE: maybe remove recurence?
                 self.reader+=1;
@@ -219,13 +222,13 @@ impl<S: Seek> Seek for MultiRead<S> {
                     // NOTE: seek on skipped reader?
                 }
                 for i in self.reader+1..self.readers.len() {
-                    self.readers[i].seek(SeekFrom::Start(0))?;
+                    self.readers[i].borrow_mut().seek(SeekFrom::Start(0))?;
                 }
-                self.readers[self.reader].seek(SeekFrom::Start(m))?;
+                self.readers[self.reader].borrow_mut().seek(SeekFrom::Start(m))?;
                 Ok(n)
             },
             SeekFrom::Current(n) => {
-                let mut current = self.readers[self.reader].seek(SeekFrom::Current(0))?;
+                let mut current = self.readers[self.reader].borrow_mut().seek(SeekFrom::Current(0))?;
                 if self.reader > 0 {
                     current += self.ends[self.reader-1]
                 }
