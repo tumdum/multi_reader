@@ -4,7 +4,6 @@ extern crate rayon;
 extern crate rand;
 
 use std::io::{Error,ErrorKind,Read,Result,Seek,SeekFrom};
-use std::cell::RefCell;
 use std::ops::DerefMut;
 use std::borrow::Borrow;
 use std::sync::{Mutex,MutexGuard};
@@ -18,7 +17,7 @@ enum Task {
 }
 
 pub struct MultiRead<R> {
-    readers: Vec<Mutex<RefCell<R>>>,
+    readers: Vec<Mutex<R>>,
     ends: Vec<u64>,
     reader: usize,
     total_size: u64,
@@ -42,6 +41,13 @@ fn read_boundry<T: Read + Seek>(reader: &mut T, b: &Line) -> LineResult<Vec<u8>>
     unreachable!();
 }
 
+
+impl<R: Send> MultiRead<R> {
+    fn lock_reader(&self, pos: usize) -> MutexGuard<R> {
+        self.readers[pos].lock().unwrap()
+    }
+}
+
 impl<R: Read + Seek + Send> MultiRead<R> {
     pub fn new<T: IntoIterator<Item=R>>(rs: T) -> Result<MultiRead<R>> {
         let mut readers = vec![];
@@ -52,17 +58,13 @@ impl<R: Read + Seek + Send> MultiRead<R> {
             if size == 0 {
                 continue;
             }
-            readers.push(Mutex::new(RefCell::new(r)));
+            readers.push(Mutex::new(r));
             total_size += size;
             ends.push(total_size);
         }
         let reader = 0;
         debug_assert!(readers.len() == ends.len());
         Ok(MultiRead{readers, ends, reader, total_size})
-    }
-
-    fn lock_reader(&self, pos: usize) -> MutexGuard<RefCell<R>> {
-        self.readers[pos].lock().unwrap()
     }
 
     fn read_line(&self, line: &Line) -> LineResult<Vec<u8>> {
@@ -73,11 +75,11 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                 while self.ends.len() >= reader_index && self.ends[reader_index] < start + len as u64 {
                     reader_index += 1;
                 }
-                let guard = self.lock_reader(reader_index);
-                let mut reader = guard.borrow_mut();
                 let reader_start = if reader_index == 0 { 0 } else { self.ends[reader_index-1] };
                 let start = start - reader_start;
-                return Ok(read_boundry(reader.deref_mut(), &Line::Boundary{start, len})?);
+                return Ok(read_boundry(
+                    self.lock_reader(reader_index).deref_mut(), 
+                    &Line::Boundary{start, len})?);
             }
         }
     }
@@ -91,7 +93,7 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                 let tmp : std::result::Result<Vec<Vec<Line>>, _> = self.readers
                     .par_iter_mut()
                     .zip(offsets)
-                    .map(|pair| pair.0.lock().map(|g| find_lines_boundaries(g.borrow_mut().deref_mut(), *pair.1)).unwrap())
+                    .map(|(r,o)| find_lines_boundaries(r.lock().unwrap().deref_mut(), *o))
                     .collect();
                 local_boundaries = tmp?;
             }
@@ -207,12 +209,12 @@ impl<R: Read + Seek + Send> MultiRead<R> {
     
 }
 
-impl<R: Read> Read for MultiRead<R> {
+impl<R: Read + Send> Read for MultiRead<R> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
         if self.reader >= self.readers.len() {
             return Ok(0)
         }
-        let val = self.readers[self.reader].lock().map(|g| g.borrow_mut().read(buf)).unwrap();
+        let val = self.lock_reader(self.reader).read(buf);
         match val {
             Ok(0) => {
                 // NOTE: maybe remove recurence?
@@ -225,7 +227,7 @@ impl<R: Read> Read for MultiRead<R> {
     }
 }
 
-impl<S: Seek + Read + Send> Seek for MultiRead<S> {
+impl<S: Seek + Send> Seek for MultiRead<S> {
     fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
         match pos {
             SeekFrom::End(n) => {
@@ -250,18 +252,15 @@ impl<S: Seek + Read + Send> Seek for MultiRead<S> {
                     // NOTE: seek on skipped reader?
                 }
                 for i in self.reader+1..self.readers.len() {
-                    let guard = self.lock_reader(i);
-                    guard.borrow_mut().seek(SeekFrom::Start(0))?;
+                    self.lock_reader(i).seek(SeekFrom::Start(0))?;
                 }
-                let guard = self.lock_reader(self.reader);
-                guard.borrow_mut().seek(SeekFrom::Start(m))?;
+                self.lock_reader(self.reader).seek(SeekFrom::Start(m))?;
                 Ok(n)
             },
             SeekFrom::Current(n) => {
                 let mut current;
                 {
-                    let guard = self.lock_reader(self.reader);
-                    current = guard.borrow_mut().seek(SeekFrom::Current(0))?;
+                    current = self.lock_reader(self.reader).seek(SeekFrom::Current(0))?;
                 }
                 if self.reader > 0 {
                     current += self.ends[self.reader-1]
