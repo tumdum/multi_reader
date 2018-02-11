@@ -6,9 +6,15 @@ extern crate rand;
 use std::io::{Error,ErrorKind,Read,Result,Seek,SeekFrom};
 use std::cell::RefCell;
 use std::ops::DerefMut;
+use std::borrow::Borrow;
 use lines::*;
 
 use rayon::prelude::*;
+
+enum Task {
+    Segment(Vec<Line>),
+    Copied(Vec<u8>),
+}
 
 pub struct MultiRead<R> {
     readers: Vec<RefCell<R>>,
@@ -134,47 +140,57 @@ impl<R: Read + Seek + Send> MultiRead<R> {
         Ok(LinesIndex::new(self, boundaries))
     }
 
-    pub fn filter_which<F>(&self, f: F, lines: &[Line]) -> LineResult<Vec<usize>> 
-        where F: FnMut(&[u8]) -> bool {
+    pub fn filter_which<F>(&self, f: &F, lines: &[Line]) -> LineResult<Vec<usize>> 
+        where F: Fn(&[u8]) -> bool {
         Ok(self.map(f, lines)?.into_iter().enumerate().filter(|&(_,b)| b).map(|(v,_)| v).collect())
     }
 
-    pub fn map<F, Ret>(&self, mut f: F, lines: &[Line]) -> LineResult<Vec<Ret>> 
-        where F: FnMut(&[u8]) -> Ret {
-        let mut ret = vec![];
-        let mut reader_index = 0;
+    fn map_aux<F, Ret>(&self, f: &F, task: Task) -> LineResult<Vec<Ret>> where F: Fn(&[u8]) -> Ret {
+        match task {
+            Task::Segment(ref lines) => {
+                Ok(lines.iter().map(|l| f(&self.read_line(l).unwrap())).collect())
+            },
+            Task::Copied(ref bytes) => {
+                Ok(vec![f(bytes)])
+            }
+        }
+    }
 
-        let mut local_lines = vec![];
+    pub fn map<F, Ret>(&self, f: &F, lines: &[Line]) -> LineResult<Vec<Ret>> 
+        where F: Fn(&[u8]) -> Ret {
+        let tasks = self.split_by_readers(lines);
+        let mapped_segments : LineResult<Vec<Vec<Ret>>> = tasks.into_iter().map(|s| self.map_aux(f, s)).collect();
+        Ok(mapped_segments?.into_iter().flat_map(|v| v.into_iter()).collect())
+    }
+
+    fn split_by_readers(&self, lines: &[Line]) -> Vec<Task> {
+        let mut current_reader = 0;
+        let mut current_segment = vec![];
+        let mut tasks : Vec<Task> = vec![];
 
         for line in lines {
             match line {
                 &Line::Boundary{start, len} => {
                     let end = start + len as u64;
-                    if end <= self.ends[reader_index] {
-                        local_lines.push(Line::Boundary{start, len});
+                    if end <= self.ends[current_reader] {
+                        current_segment.push(Line::Boundary{start, len});
                     } else {
-                        for l in local_lines {
-                            ret.push(f(&self.read_line(&l)?));
-                        }
-                        local_lines = vec![Line::Boundary{start, len}];
-                        reader_index += 1;
+                        tasks.push(Task::Segment(current_segment));
+                        current_segment = vec![Line::Boundary{start, len}];
+                        current_reader += 1;
                     }
                 },
                 &Line::Copy(ref content) => {
-                    for l in local_lines {
-                        ret.push(f(&self.read_line(&l)?));
-                    }
-                    local_lines = vec![];
-                    reader_index += 1;
-
-                    ret.push(f(content.as_ref()));
+                    tasks.push(Task::Segment(current_segment));
+                    let c : &Vec<u8> = content.borrow();
+                    tasks.push(Task::Copied(c.clone()));
+                    current_segment = vec![];
+                    current_reader += 1;
                 }
             }
         }
-        for l in local_lines {
-            ret.push(f(&self.read_line(&l)?));
-        }
-        Ok(ret)
+        tasks.push(Task::Segment(current_segment));
+        tasks
     }
     
 }
