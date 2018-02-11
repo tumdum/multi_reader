@@ -58,11 +58,11 @@ impl<R: Read + Seek + Send> LinesIndex<R> {
         LinesIndex{reader, boundaries}
     }
 
-    pub fn filter_which<F>(&mut self, f: F) -> LineResult<Vec<usize>> where F: Fn(&[u8]) -> bool {
+    pub fn filter_which<F>(&mut self, f: F) -> LineResult<Vec<usize>> where F: Fn(&[u8]) -> bool + Send + Sync {
         self.reader.filter_which(&f, &self.boundaries)
     }
 
-    pub fn map<F, Ret>(&mut self, f: F) -> LineResult<Vec<Ret>> where F: Fn(&[u8]) -> Ret {
+    pub fn map<F, Ret>(&mut self, f: F) -> LineResult<Vec<Ret>> where F: Fn(&[u8]) -> Ret + Send + Sync, Ret : Send {
         self.reader.map(&f, &self.boundaries)
     }
 }

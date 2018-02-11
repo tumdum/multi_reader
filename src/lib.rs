@@ -7,6 +7,7 @@ use std::io::{Error,ErrorKind,Read,Result,Seek,SeekFrom};
 use std::cell::RefCell;
 use std::ops::DerefMut;
 use std::borrow::Borrow;
+use std::sync::{Mutex,MutexGuard};
 use lines::*;
 
 use rayon::prelude::*;
@@ -17,7 +18,7 @@ enum Task {
 }
 
 pub struct MultiRead<R> {
-    readers: Vec<RefCell<R>>,
+    readers: Vec<Mutex<RefCell<R>>>,
     ends: Vec<u64>,
     reader: usize,
     total_size: u64,
@@ -51,13 +52,17 @@ impl<R: Read + Seek + Send> MultiRead<R> {
             if size == 0 {
                 continue;
             }
-            readers.push(RefCell::new(r));
+            readers.push(Mutex::new(RefCell::new(r)));
             total_size += size;
             ends.push(total_size);
         }
         let reader = 0;
         debug_assert!(readers.len() == ends.len());
         Ok(MultiRead{readers, ends, reader, total_size})
+    }
+
+    fn lock_reader(&self, pos: usize) -> MutexGuard<RefCell<R>> {
+        self.readers[pos].lock().unwrap()
     }
 
     fn read_line(&self, line: &Line) -> LineResult<Vec<u8>> {
@@ -68,7 +73,8 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                 while self.ends.len() >= reader_index && self.ends[reader_index] < start + len as u64 {
                     reader_index += 1;
                 }
-                let mut reader = self.readers[reader_index].borrow_mut();
+                let guard = self.lock_reader(reader_index);
+                let mut reader = guard.borrow_mut();
                 let reader_start = if reader_index == 0 { 0 } else { self.ends[reader_index-1] };
                 let start = start - reader_start;
                 return Ok(read_boundry(reader.deref_mut(), &Line::Boundary{start, len})?);
@@ -85,7 +91,7 @@ impl<R: Read + Seek + Send> MultiRead<R> {
                 let tmp : std::result::Result<Vec<Vec<Line>>, _> = self.readers
                     .par_iter_mut()
                     .zip(offsets)
-                    .map(|pair| find_lines_boundaries(pair.0.borrow_mut().deref_mut(), *pair.1))
+                    .map(|pair| pair.0.lock().map(|g| find_lines_boundaries(g.borrow_mut().deref_mut(), *pair.1)).unwrap())
                     .collect();
                 local_boundaries = tmp?;
             }
@@ -140,27 +146,33 @@ impl<R: Read + Seek + Send> MultiRead<R> {
         Ok(LinesIndex::new(self, boundaries))
     }
 
-    pub fn filter_which<F>(&self, f: &F, lines: &[Line]) -> LineResult<Vec<usize>> 
-        where F: Fn(&[u8]) -> bool {
-        Ok(self.map(f, lines)?.into_iter().enumerate().filter(|&(_,b)| b).map(|(v,_)| v).collect())
+    pub fn filter_which<F>(&self, f: &F, lines: &[Line]) -> LineResult<Vec<usize>> where F: Fn(&[u8]) -> bool + Send + Sync {
+        Ok(self
+           .map(f, lines)?
+           .into_iter()
+           .enumerate()
+           .filter_map(|(v, b)| if b { Some(v) } else { None })
+           .collect())
+    }
+
+    pub fn map<F, Ret>(&self, f: &F, lines: &[Line]) -> LineResult<Vec<Ret>> where F: Fn(&[u8]) -> Ret + Send + Sync, Ret : Send {
+        let mapped_segments : LineResult<Vec<Vec<_>>> = self
+            .split_by_readers(lines)
+            .into_par_iter()
+            .map(|s| self.map_aux(f, s))
+            .collect();
+        Ok(mapped_segments?.into_iter().flat_map(|v| v.into_iter()).collect())
     }
 
     fn map_aux<F, Ret>(&self, f: &F, task: Task) -> LineResult<Vec<Ret>> where F: Fn(&[u8]) -> Ret {
-        match task {
-            Task::Segment(ref lines) => {
-                Ok(lines.iter().map(|l| f(&self.read_line(l).unwrap())).collect())
+        Ok(match task {
+            Task::Segment(lines) => {
+                lines.into_iter().map(|l| f(&self.read_line(&l).unwrap())).collect()
             },
             Task::Copied(ref bytes) => {
-                Ok(vec![f(bytes)])
+                vec![f(bytes)]
             }
-        }
-    }
-
-    pub fn map<F, Ret>(&self, f: &F, lines: &[Line]) -> LineResult<Vec<Ret>> 
-        where F: Fn(&[u8]) -> Ret {
-        let tasks = self.split_by_readers(lines);
-        let mapped_segments : LineResult<Vec<Vec<Ret>>> = tasks.into_iter().map(|s| self.map_aux(f, s)).collect();
-        Ok(mapped_segments?.into_iter().flat_map(|v| v.into_iter()).collect())
+        })
     }
 
     fn split_by_readers(&self, lines: &[Line]) -> Vec<Task> {
@@ -200,7 +212,7 @@ impl<R: Read> Read for MultiRead<R> {
         if self.reader >= self.readers.len() {
             return Ok(0)
         }
-        let val = self.readers[self.reader].borrow_mut().read(buf);
+        let val = self.readers[self.reader].lock().map(|g| g.borrow_mut().read(buf)).unwrap();
         match val {
             Ok(0) => {
                 // NOTE: maybe remove recurence?
@@ -213,7 +225,7 @@ impl<R: Read> Read for MultiRead<R> {
     }
 }
 
-impl<S: Seek> Seek for MultiRead<S> {
+impl<S: Seek + Read + Send> Seek for MultiRead<S> {
     fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
         match pos {
             SeekFrom::End(n) => {
@@ -238,13 +250,19 @@ impl<S: Seek> Seek for MultiRead<S> {
                     // NOTE: seek on skipped reader?
                 }
                 for i in self.reader+1..self.readers.len() {
-                    self.readers[i].borrow_mut().seek(SeekFrom::Start(0))?;
+                    let guard = self.lock_reader(i);
+                    guard.borrow_mut().seek(SeekFrom::Start(0))?;
                 }
-                self.readers[self.reader].borrow_mut().seek(SeekFrom::Start(m))?;
+                let guard = self.lock_reader(self.reader);
+                guard.borrow_mut().seek(SeekFrom::Start(m))?;
                 Ok(n)
             },
             SeekFrom::Current(n) => {
-                let mut current = self.readers[self.reader].borrow_mut().seek(SeekFrom::Current(0))?;
+                let mut current;
+                {
+                    let guard = self.lock_reader(self.reader);
+                    current = guard.borrow_mut().seek(SeekFrom::Current(0))?;
+                }
                 if self.reader > 0 {
                     current += self.ends[self.reader-1]
                 }
